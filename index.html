@@ -83,8 +83,7 @@
 
         #embed-frame {
             --crop-top: 100px;
-            --crop-right: 100px;
-            width: calc(100% + var(--crop-right));
+            width: 100%;
             height: calc(100% + var(--crop-top));
             border: none;
             transform: translateY(calc(-1 * var(--crop-top)));
@@ -215,7 +214,7 @@
 
     <div id="viewer">
         <div id="iframe-crop">
-            <iframe id="embed-frame" title="Trang web nhúng" sandbox="allow-scripts allow-same-origin allow-forms allow-popups allow-popups-to-escape-sandbox allow-fullscreen"></iframe>
+            <iframe id="embed-frame" title="Trang web nhúng" sandbox="allow-scripts allow-same-origin allow-forms allow-fullscreen"></iframe>
         </div>
     </div>
 
