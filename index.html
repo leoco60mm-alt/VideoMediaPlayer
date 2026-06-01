@@ -3,279 +3,386 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
-    <title>Trình Phát Video - Auto Load & Blob Subtitle</title>
+    <title>Nhúng Trang Web - Chọn Tập</title>
     <style>
+        * { box-sizing: border-box; }
+
         body {
-            background-color: #000; color: #fff; 
+            margin: 0;
             font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
-            margin: 0; padding: 0; overflow: hidden;
+            background: #000;
+            color: #fff;
+            height: 100vh;
+            height: 100dvh;
+            overflow: hidden;
             -webkit-tap-highlight-color: transparent;
         }
 
-        #block-screen { display: none; text-align: center; margin-top: 20vh; padding: 30px; }
-        #block-screen h2 { color: #e50914; }
-
-        #setup-box { width: 90%; max-width: 500px; margin: 40px auto; display: flex; flex-direction: column; gap: 15px; }
-        textarea { height: 120px; background: #222; color: #0f0; border: 1px solid #444; padding: 15px; font-family: monospace; border-radius: 10px; font-size: 14px; }
-        button.action-btn { padding: 15px; background: #007bff; color: white; border: none; border-radius: 10px; cursor: pointer; font-size: 16px; font-weight: bold; }
-
-        /* --- MÀN HÌNH XEM PHIM --- */
-        #movie-box { 
-            display: none; 
-            width: 100vw; height: 100vh; height: 100dvh; 
-            justify-content: center; align-items: center; 
-            background: #000; position: relative; 
-        }
-        
-        video { 
-            width: 100%; height: 100%;
-            max-height: calc(100vh - 90px); max-height: calc(100dvh - 90px); 
-            object-fit: contain; background: #000; outline: none;
+        #setup-box {
+            width: 90%;
+            max-width: 500px;
+            margin: 40px auto;
+            display: flex;
+            flex-direction: column;
+            gap: 15px;
         }
 
-        video::cue { color: transparent; background: transparent; }
-
-        /* --- GIAO DIỆN PHỤ ĐỀ TÙY CHỈNH --- */
-        #custom-sub {
-            position: absolute; top: 15%; left: 50%; transform: translateX(-50%);
-            width: 90%; text-align: center; font-size: 20px; font-weight: bold;
-            color: #ffff00; text-shadow: 2px 2px 4px rgba(0,0,0,0.9), -2px -2px 4px rgba(0,0,0,0.9);
-            pointer-events: none; z-index: 50; display: none; 
+        #setup-box h3 {
+            text-align: center;
+            margin: 0 0 4px;
         }
 
-        /* --- NÚT FAB & POPUP --- */
+        #base64-input {
+            height: 120px;
+            background: #222;
+            color: #0f0;
+            border: 1px solid #444;
+            padding: 15px;
+            font-family: monospace;
+            border-radius: 10px;
+            font-size: 14px;
+            resize: vertical;
+        }
+
+        .action-btn {
+            padding: 15px;
+            background: #007bff;
+            color: #fff;
+            border: none;
+            border-radius: 10px;
+            cursor: pointer;
+            font-size: 16px;
+            font-weight: bold;
+        }
+
+        .action-btn:hover { background: #0069d9; }
+
+        #viewer {
+            display: none;
+            flex: 1;
+            position: relative;
+            background: #000;
+            width: 100vw;
+            height: 100vh;
+            height: 100dvh;
+        }
+
+        body.viewing {
+            display: flex;
+            flex-direction: column;
+        }
+
+        body.viewing #setup-box { display: none; }
+        body.viewing #viewer { display: block; flex: 1; min-height: 0; }
+
+        #iframe-crop {
+            position: absolute;
+            inset: 0;
+            overflow: hidden;
+        }
+
+        #embed-frame {
+            --crop-top: 100px;
+            --crop-right: 100px;
+            width: calc(100% + var(--crop-right));
+            height: calc(100% + var(--crop-top));
+            border: none;
+            transform: translateY(calc(-1 * var(--crop-top)));
+        }
+
+        #error-msg {
+            display: none;
+            position: fixed;
+            top: 12px;
+            left: 50%;
+            transform: translateX(-50%);
+            background: #e50914;
+            color: #fff;
+            padding: 10px 16px;
+            border-radius: 8px;
+            font-size: 14px;
+            z-index: 110;
+            max-width: 90%;
+            text-align: center;
+        }
+
         #fab-episodes {
-            display: none; position: fixed; bottom: 25px; right: 20px;
-            background-color: #e50914; color: white; border: none; border-radius: 30px;
-            padding: 12px 20px; font-size: 15px; font-weight: bold;
-            box-shadow: 0 4px 15px rgba(229, 9, 20, 0.5); z-index: 90; cursor: pointer;
-            align-items: center; gap: 8px;
+            display: none;
+            position: fixed;
+            bottom: 25px;
+            right: 20px;
+            background-color: #e50914;
+            color: #fff;
+            border: none;
+            border-radius: 30px;
+            padding: 12px 20px;
+            font-size: 15px;
+            font-weight: bold;
+            box-shadow: 0 4px 15px rgba(229, 9, 20, 0.5);
+            z-index: 90;
+            cursor: pointer;
         }
+
+        body.viewing #fab-episodes { display: block; }
 
         #popup-overlay {
-            position: fixed; top: 0; left: 0; width: 100%; height: 100%;
-            background: rgba(0, 0, 0, 0.7); backdrop-filter: blur(5px);
-            z-index: 100; display: none; opacity: 0; transition: opacity 0.3s ease;
+            position: fixed;
+            inset: 0;
+            background: rgba(0, 0, 0, 0.7);
+            backdrop-filter: blur(5px);
+            z-index: 100;
+            display: none;
+            opacity: 0;
+            transition: opacity 0.3s ease;
+        }
+
+        #popup-overlay.show {
+            display: block;
+            opacity: 1;
         }
 
         #popup-content {
-            position: absolute; bottom: -100%; left: 0; width: 100%;
-            background: #1c1c1c; border-top-left-radius: 20px; border-top-right-radius: 20px;
-            padding: 20px; box-sizing: border-box; max-height: 70vh;
-            display: flex; flex-direction: column; transition: bottom 0.3s ease;
+            position: absolute;
+            bottom: -100%;
+            left: 0;
+            width: 100%;
+            background: #1c1c1c;
+            border-top-left-radius: 20px;
+            border-top-right-radius: 20px;
+            padding: 20px;
+            max-height: 70vh;
+            display: flex;
+            flex-direction: column;
+            transition: bottom 0.3s ease;
         }
-        #popup-overlay.show { display: block; opacity: 1; }
+
         #popup-overlay.show #popup-content { bottom: 0; }
-        .popup-header { display: flex; justify-content: space-between; align-items: center; margin-bottom: 20px; border-bottom: 1px solid #333; padding-bottom: 10px; }
+
+        .popup-header {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            margin-bottom: 20px;
+            border-bottom: 1px solid #333;
+            padding-bottom: 10px;
+        }
+
         .popup-header h3 { margin: 0; font-size: 18px; }
-        .close-btn { background: transparent; border: none; color: #fff; font-size: 24px; font-weight: bold; cursor: pointer; padding: 0; }
-        .list-container { display: flex; flex-direction: column; gap: 10px; overflow-y: auto; padding-bottom: 20px; }
-        .ep-btn { background: #2a2a2a; color: #fff; border: none; padding: 15px; border-radius: 10px; cursor: pointer; font-size: 15px; text-align: left; font-weight: bold; }
-        .ep-btn.active { background: #e50914; color: white; }
+
+        .close-btn {
+            background: transparent;
+            border: none;
+            color: #fff;
+            font-size: 24px;
+            font-weight: bold;
+            cursor: pointer;
+            padding: 0;
+        }
+
+        .list-container {
+            display: flex;
+            flex-direction: column;
+            gap: 10px;
+            overflow-y: auto;
+            padding-bottom: 20px;
+        }
+
+        .ep-btn {
+            background: #2a2a2a;
+            color: #fff;
+            border: none;
+            padding: 15px;
+            border-radius: 10px;
+            cursor: pointer;
+            font-size: 15px;
+            text-align: left;
+            font-weight: bold;
+        }
+
+        .ep-btn.active {
+            background: #e50914;
+            color: #fff;
+        }
     </style>
 </head>
 <body>
 
-    <div id="block-screen">
-        <h2>❌ PHÁT HIỆN GIẢ LẬP</h2>
-        <p>Vui lòng dùng Điện thoại thật để truy cập!</p>
-    </div>
-
     <div id="setup-box">
-        <h3 style="text-align: center; margin-bottom: 0;">Nhập Dữ Liệu Phim</h3>
-        <textarea id="base64Input" placeholder="Dán mã Base64 vào đây..."></textarea>
-        <button class="action-btn" onclick="handleManualSubmit()">Xem Phim Ngay</button>
+        <h3>Nhập dữ liệu Base64</h3>
+        <textarea id="base64-input" placeholder="Dán mã Base64 (decode ra URL có ep=...)..."></textarea>
+        <button type="button" class="action-btn" id="open-btn">Xem ngay</button>
     </div>
 
-    <div id="movie-box">
-        <video id="vidPlayer" controls crossorigin="anonymous" playsinline></video>
-        <div id="custom-sub"></div>
+    <div id="viewer">
+        <div id="iframe-crop">
+            <iframe id="embed-frame" title="Trang web nhúng" sandbox="allow-scripts allow-same-origin allow-forms allow-popups allow-popups-to-escape-sandbox allow-fullscreen"></iframe>
+        </div>
     </div>
 
-    <button id="fab-episodes" onclick="togglePopup(true)">
-        ☰ Chọn Tập
-    </button>
+    <div id="error-msg"></div>
 
-    <div id="popup-overlay" onclick="togglePopup(false)">
-        <div id="popup-content" onclick="event.stopPropagation()">
+    <button type="button" id="fab-episodes">☰ Chọn tập</button>
+
+    <div id="popup-overlay">
+        <div id="popup-content">
             <div class="popup-header">
                 <h3>Danh sách tập</h3>
-                <button class="close-btn" onclick="togglePopup(false)">&times;</button>
+                <button type="button" class="close-btn" id="popup-close">&times;</button>
             </div>
-            <div class="list-container" id="epList"></div>
+            <div class="list-container" id="ep-list"></div>
         </div>
     </div>
 
     <script>
-        const ENABLE_BLOCKER = false; 
-        let isBlocked = false;
+        const base64Input = document.getElementById('base64-input');
+        const openBtn = document.getElementById('open-btn');
+        const viewer = document.getElementById('viewer');
+        const embedFrame = document.getElementById('embed-frame');
+        const errorMsg = document.getElementById('error-msg');
+        const fabEpisodes = document.getElementById('fab-episodes');
+        const popupOverlay = document.getElementById('popup-overlay');
+        const popupClose = document.getElementById('popup-close');
+        const epList = document.getElementById('ep-list');
 
-        // Biến toàn cục để lưu link file phụ đề ảo (Dùng để xóa rác RAM khi chuyển tập)
-        let currentSubtitleBlobUrl = null;
+        let baseUrl = null;
+        let totalEpisodes = 0;
+        let currentEpisode = 1;
 
-        function triggerBlock() {
-            if (isBlocked) return;
-            isBlocked = true;
-            document.getElementById('setup-box').style.display = 'none';
-            document.getElementById('movie-box').style.display = 'none';
-            document.getElementById('fab-episodes').style.display = 'none';
-            document.getElementById('block-screen').style.display = 'block';
-            const p = document.getElementById('vidPlayer');
-            if (p) { p.pause(); p.removeAttribute('src'); p.load(); }
+        function decodeBase64ToUrl(base64Data) {
+            const trimmed = base64Data.trim();
+            const binary = atob(trimmed.replace(/\s/g, ''));
+            try {
+                return decodeURIComponent(escape(binary)).trim();
+            } catch {
+                return binary.trim();
+            }
         }
 
-        function detectDevToolsAndDesktop() {
-            if (!ENABLE_BLOCKER) return;
-            const isEmulatorSize = (window.outerWidth > 0 && Math.abs(window.outerWidth - window.innerWidth) > 150);
-            const isDesktopPlatform = /Win32|Win64|MacIntel|Linux x86_64/.test(navigator.platform);
-            if (isEmulatorSize || isDesktopPlatform) triggerBlock();
+        function normalizeUrl(value) {
+            if (/^https?:\/\//i.test(value)) return value;
+            return 'https://' + value;
         }
 
-        if (ENABLE_BLOCKER) {
-            detectDevToolsAndDesktop();
-            window.addEventListener('resize', detectDevToolsAndDesktop);
+        function showError(message) {
+            errorMsg.textContent = message;
+            errorMsg.style.display = 'block';
+            setTimeout(() => {
+                errorMsg.style.display = 'none';
+            }, 4000);
         }
 
         function togglePopup(show) {
-            const overlay = document.getElementById('popup-overlay');
             if (show) {
-                overlay.style.display = 'block';
-                setTimeout(() => overlay.classList.add('show'), 10);
+                popupOverlay.style.display = 'block';
+                requestAnimationFrame(() => popupOverlay.classList.add('show'));
             } else {
-                overlay.classList.remove('show');
-                setTimeout(() => overlay.style.display = 'none', 300);
+                popupOverlay.classList.remove('show');
+                setTimeout(() => {
+                    popupOverlay.style.display = 'none';
+                }, 300);
             }
         }
-        
-        function processMovieData(base64Data) {
-            if (isBlocked) return;
-            if (!base64Data) return alert("Không có dữ liệu Base64!");
 
-            try {
-                const decodedStr = decodeURIComponent(escape(atob(base64Data)));
-                let episodes = JSON.parse(decodedStr);
-                if (!Array.isArray(episodes)) episodes = [episodes];
+        function buildEpisodeUrl(epNumber) {
+            const url = new URL(baseUrl.href);
+            url.searchParams.set('ep', String(epNumber));
+            return url.href;
+        }
 
-                document.getElementById('setup-box').style.display = 'none';
-                document.getElementById('movie-box').style.display = 'flex'; 
-                document.getElementById('fab-episodes').style.display = 'flex';
+        function loadEpisode(epNumber) {
+            currentEpisode = epNumber;
+            embedFrame.src = buildEpisodeUrl(epNumber);
 
-                renderEpisodes(episodes);
-            } catch (err) {
-                console.error(err);
-                alert("Lỗi: Mã Base64 không hợp lệ hoặc sai cấu trúc JSON!");
-                document.getElementById('setup-box').style.display = 'flex';
+            document.querySelectorAll('.ep-btn').forEach((btn) => {
+                btn.classList.toggle('active', Number(btn.dataset.ep) === epNumber);
+            });
+        }
+
+        function renderEpisodes() {
+            epList.innerHTML = '';
+
+            for (let i = 1; i <= totalEpisodes; i++) {
+                const btn = document.createElement('button');
+                btn.type = 'button';
+                btn.className = 'ep-btn';
+                btn.dataset.ep = String(i);
+                btn.textContent = `Tập ${i}`;
+
+                btn.addEventListener('click', () => {
+                    loadEpisode(i);
+                    togglePopup(false);
+                });
+
+                epList.appendChild(btn);
             }
+
+            loadEpisode(1);
+        }
+
+        function processBase64Data(base64Data) {
+            if (!base64Data) {
+                showError('Không có dữ liệu Base64');
+                return;
+            }
+
+            let decodedUrl;
+            try {
+                decodedUrl = decodeBase64ToUrl(base64Data);
+            } catch {
+                showError('Mã Base64 không hợp lệ');
+                return;
+            }
+
+            let parsed;
+            try {
+                parsed = new URL(normalizeUrl(decodedUrl));
+            } catch {
+                showError('Decode không ra URL hợp lệ');
+                return;
+            }
+
+            const epParam = parsed.searchParams.get('ep');
+            const total = parseInt(epParam, 10);
+
+            if (!epParam || Number.isNaN(total) || total < 1) {
+                showError('URL phải có tham số ep=xx (số tập)');
+                return;
+            }
+
+            baseUrl = parsed;
+            totalEpisodes = total;
+
+            localStorage.setItem('embedBase64', base64Data.trim());
+
+            document.body.classList.add('viewing');
+            renderEpisodes();
         }
 
         function handleManualSubmit() {
-            const inputData = document.getElementById('base64Input').value.trim();
-            processMovieData(inputData);
+            processBase64Data(base64Input.value.trim());
         }
 
-        window.addEventListener('DOMContentLoaded', () => {
-            const urlParams = new URLSearchParams(window.location.search);
-            const xstrData = urlParams.get('xstr');
-            if (xstrData) {
-                processMovieData(xstrData);
-            }
+        openBtn.addEventListener('click', handleManualSubmit);
+
+        base64Input.addEventListener('keydown', (e) => {
+            if (e.key === 'Enter' && (e.ctrlKey || e.metaKey)) handleManualSubmit();
         });
 
-        function renderEpisodes(episodes) {
-            const listContainer = document.getElementById('epList');
-            listContainer.innerHTML = ''; 
-            episodes.forEach((ep, index) => {
-                const btn = document.createElement('button');
-                btn.className = 'ep-btn';
-                btn.textContent = ep.name || `Tập ${index + 1}`; 
-                
-                btn.onclick = () => {
-                    document.querySelectorAll('.ep-btn').forEach(b => b.classList.remove('active'));
-                    btn.classList.add('active');
-                    playVideo(ep);
-                    togglePopup(false); 
-                };
-                listContainer.appendChild(btn);
-            });
-            if(listContainer.firstChild) listContainer.firstChild.click();
-        }
+        fabEpisodes.addEventListener('click', () => togglePopup(true));
+        popupClose.addEventListener('click', () => togglePopup(false));
+        popupOverlay.addEventListener('click', () => togglePopup(false));
+        document.getElementById('popup-content').addEventListener('click', (e) => e.stopPropagation());
 
-        // --- 🌟 LOGIC XỬ LÝ VIDEO & BẮT PHỤ ĐỀ BASE64 🌟 ---
-        function playVideo(ep) {
-            const player = document.getElementById('vidPlayer');
-            const customSub = document.getElementById('custom-sub');
-            
-            player.innerHTML = '';
-            customSub.innerHTML = ''; 
-            customSub.style.display = 'none';
-
-            // Dọn dẹp RAM: Xóa file sub ảo của tập cũ trước khi sang tập mới
-            if (currentSubtitleBlobUrl) {
-                URL.revokeObjectURL(currentSubtitleBlobUrl);
-                currentSubtitleBlobUrl = null;
+        window.addEventListener('DOMContentLoaded', () => {
+            const xstr = new URLSearchParams(window.location.search).get('xstr');
+            if (xstr) {
+                processBase64Data(xstr);
+                return;
             }
 
-            const source = document.createElement('source');
-            source.src = ep.videoUrl || ep.urlVideo;
-            source.type = 'video/mp4';
-            player.appendChild(source);
-
-            const subData = ep.subUrl || ep.urlSub;
-            
-            if (subData) {
-                let finalSubLink = subData; // Mặc định giả sử nó là 1 đường link URL
-
-                // THUẬT TOÁN PHÂN LOẠI: URL hay Base64 VTT?
-                try {
-                    // Cố tình giải mã. Nếu subData là URL ("https://...") nó sẽ văng lỗi ngay lập tức
-                    const binaryStr = atob(subData);
-                    
-                    // Sử dụng TextDecoder để đảm bảo tiếng Việt (UTF-8) không bị lỗi font
-                    const bytes = new Uint8Array(binaryStr.length);
-                    for (let i = 0; i < binaryStr.length; i++) {
-                        bytes[i] = binaryStr.charCodeAt(i);
-                    }
-                    const decodedVttText = new TextDecoder('utf-8').decode(bytes);
-
-                    // Nếu mã hóa thành công, tạo một File VTT ảo trên RAM (Blob)
-                    const blob = new Blob([decodedVttText], { type: 'text/vtt;charset=utf-8' });
-                    finalSubLink = URL.createObjectURL(blob);
-                    
-                    // Lưu lại URL ảo này để dọn dẹp sau
-                    currentSubtitleBlobUrl = finalSubLink;
-
-                } catch (error) {
-                    // Nếu lọt vào đây (catch) nghĩa là atob() thất bại -> subData chính là 1 link URL bình thường!
-                    // Code sẽ không làm gì cả, tiếp tục dùng finalSubLink = URL cũ.
-                }
-
-                // Gắn Link Sub (URL hoặc URL Ảo) vào thẻ Video
-                const track = document.createElement('track');
-                track.src = finalSubLink; 
-                track.kind = 'subtitles'; 
-                track.srclang = 'vi';
-                track.label = 'Tiếng Việt'; 
-                track.default = true;
-                player.appendChild(track);
-
-                // Bắt sự kiện sub chạy để gán vào vị trí Custom Subtitle
-                track.addEventListener('load', function() {
-                    const textTrack = player.textTracks[0];
-                    textTrack.mode = 'hidden'; 
-
-                    textTrack.oncuechange = function() {
-                        const activeCues = textTrack.activeCues;
-                        if (activeCues && activeCues.length > 0) {
-                            customSub.innerHTML = activeCues[0].text.replace(/\n/g, '<br>');
-                            customSub.style.display = 'block';
-                        } else {
-                            customSub.style.display = 'none';
-                        }
-                    };
-                });
-            }
-            player.load(); player.play();
-        }
+            const saved = localStorage.getItem('embedBase64');
+            if (saved) base64Input.value = saved;
+        });
     </script>
 </body>
 </html>
