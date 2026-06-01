@@ -3,7 +3,15 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
-    <title>Nhúng Trang Web - Chọn Tập</title>
+    <title>Mở trang web của bạn không quảng cáo</title>
+    <script>
+        (function () {
+            if (/[?&]xstr=/.test(location.search)) {
+                document.documentElement.classList.add('auto-xstr');
+                document.body.classList.add('viewing');
+            }
+        })();
+    </script>
     <style>
         * { box-sizing: border-box; }
 
@@ -75,6 +83,19 @@
         body.viewing #setup-box { display: none; }
         body.viewing #viewer { display: block; flex: 1; min-height: 0; }
 
+        html.auto-xstr #setup-box { display: none; }
+
+        html.auto-xstr body {
+            display: flex;
+            flex-direction: column;
+        }
+
+        html.auto-xstr #viewer {
+            display: block;
+            flex: 1;
+            min-height: 0;
+        }
+
         #iframe-crop {
             position: absolute;
             inset: 0;
@@ -105,110 +126,35 @@
             text-align: center;
         }
 
-        #fab-episodes {
+        #block-screen {
             display: none;
-            position: fixed;
-            bottom: 25px;
-            right: 20px;
-            background-color: #e50914;
-            color: #fff;
-            border: none;
-            border-radius: 30px;
-            padding: 12px 20px;
-            font-size: 15px;
-            font-weight: bold;
-            box-shadow: 0 4px 15px rgba(229, 9, 20, 0.5);
-            z-index: 90;
-            cursor: pointer;
+            text-align: center;
+            margin-top: 20vh;
+            padding: 30px;
         }
 
-        body.viewing #fab-episodes { display: block; }
-
-        #popup-overlay {
-            position: fixed;
-            inset: 0;
-            background: rgba(0, 0, 0, 0.7);
-            backdrop-filter: blur(5px);
-            z-index: 100;
-            display: none;
-            opacity: 0;
-            transition: opacity 0.3s ease;
+        #block-screen h2 {
+            color: #e50914;
+            margin: 0 0 12px;
         }
 
-        #popup-overlay.show {
-            display: block;
-            opacity: 1;
-        }
-
-        #popup-content {
-            position: absolute;
-            bottom: -100%;
-            left: 0;
-            width: 100%;
-            background: #1c1c1c;
-            border-top-left-radius: 20px;
-            border-top-right-radius: 20px;
-            padding: 20px;
-            max-height: 70vh;
-            display: flex;
-            flex-direction: column;
-            transition: bottom 0.3s ease;
-        }
-
-        #popup-overlay.show #popup-content { bottom: 0; }
-
-        .popup-header {
-            display: flex;
-            justify-content: space-between;
-            align-items: center;
-            margin-bottom: 20px;
-            border-bottom: 1px solid #333;
-            padding-bottom: 10px;
-        }
-
-        .popup-header h3 { margin: 0; font-size: 18px; }
-
-        .close-btn {
-            background: transparent;
-            border: none;
-            color: #fff;
-            font-size: 24px;
-            font-weight: bold;
-            cursor: pointer;
-            padding: 0;
-        }
-
-        .list-container {
-            display: flex;
-            flex-direction: column;
-            gap: 10px;
-            overflow-y: auto;
-            padding-bottom: 20px;
-        }
-
-        .ep-btn {
-            background: #2a2a2a;
-            color: #fff;
-            border: none;
-            padding: 15px;
-            border-radius: 10px;
-            cursor: pointer;
-            font-size: 15px;
-            text-align: left;
-            font-weight: bold;
-        }
-
-        .ep-btn.active {
-            background: #e50914;
-            color: #fff;
+        #block-screen p {
+            color: #aaa;
+            line-height: 1.5;
+            margin: 0;
         }
     </style>
 </head>
 <body>
 
+    <div id="block-screen">
+        <h2>Truy cập bị từ chối</h2>
+        <p>Vui lòng mở bằng điện thoại thật.<br>Không hỗ trợ máy tính hoặc chế độ giả lập mobile (F12).</p>
+    </div>
+
     <div id="setup-box">
-        <h3>Nhập dữ liệu Base64</h3>
-        <textarea id="base64-input" placeholder="Dán mã Base64 (decode ra URL có ep=...)..."></textarea>
+        <h3>Nhập dữ liệu</h3>
+        <textarea id="base64-input" placeholder="Dán mã đã mã hoá — hoặc mở link ?xstr=..."></textarea>
         <button type="button" class="action-btn" id="open-btn">Xem ngay</button>
     </div>
 
@@ -220,40 +166,106 @@
 
     <div id="error-msg"></div>
 
-    <button type="button" id="fab-episodes">☰ Chọn tập</button>
-
-    <div id="popup-overlay">
-        <div id="popup-content">
-            <div class="popup-header">
-                <h3>Danh sách tập</h3>
-                <button type="button" class="close-btn" id="popup-close">&times;</button>
-            </div>
-            <div class="list-container" id="ep-list"></div>
-        </div>
-    </div>
-
     <script>
+        const ENABLE_MOBILE_BLOCKER = true;
+        const SECRET_KEY = 'G0tbc7e9BrgUZiwGk1W3Y30M';
+
         const base64Input = document.getElementById('base64-input');
         const openBtn = document.getElementById('open-btn');
-        const viewer = document.getElementById('viewer');
         const embedFrame = document.getElementById('embed-frame');
         const errorMsg = document.getElementById('error-msg');
-        const fabEpisodes = document.getElementById('fab-episodes');
-        const popupOverlay = document.getElementById('popup-overlay');
-        const popupClose = document.getElementById('popup-close');
-        const epList = document.getElementById('ep-list');
+        const blockScreen = document.getElementById('block-screen');
+        const setupBox = document.getElementById('setup-box');
+        const viewer = document.getElementById('viewer');
 
-        let baseUrl = null;
-        let totalEpisodes = 0;
-        let currentEpisode = 1;
+        let isBlocked = false;
 
-        function decodeBase64ToUrl(base64Data) {
-            const trimmed = base64Data.trim();
-            const binary = atob(trimmed.replace(/\s/g, ''));
+        function isPhoneUserAgent() {
+            if (navigator.userAgentData && typeof navigator.userAgentData.mobile === 'boolean') {
+                return navigator.userAgentData.mobile;
+            }
+            const ua = navigator.userAgent;
+            if (/iPhone|iPod/i.test(ua)) return true;
+            if (/Android/i.test(ua) && /Mobile/i.test(ua)) return true;
+            return false;
+        }
+
+        function isDesktopPlatform() {
+            const platform = navigator.platform || '';
+            const ua = navigator.userAgent;
+            if (/Win32|Win64|Windows|MacIntel|Macintosh|Linux x86_64|Linux i686|CrOS/i.test(platform)) return true;
+            if (/Windows|Macintosh|Linux/i.test(ua) && !/Mobile|Android|iPhone/i.test(ua)) return true;
+            return false;
+        }
+
+        function isDevToolsEmulation() {
+            if (window.outerWidth > 0 && Math.abs(window.outerWidth - window.innerWidth) > 140) return true;
+            if (isPhoneUserAgent() && isDesktopPlatform()) return true;
+            if (isPhoneUserAgent() && window.matchMedia('(hover: hover) and (pointer: fine)').matches) return true;
+            const maxScreen = Math.max(screen.width, screen.height);
+            if (isPhoneUserAgent() && maxScreen > 1100) return true;
+            return false;
+        }
+
+        function lacksRealTouch() {
+            return (navigator.maxTouchPoints || 0) < 1;
+        }
+
+        function isAllowedPhone() {
+            if (!ENABLE_MOBILE_BLOCKER) return true;
+            if (!isPhoneUserAgent()) return false;
+            if (isDesktopPlatform()) return false;
+            if (lacksRealTouch()) return false;
+            if (isDevToolsEmulation()) return false;
+            if (navigator.webdriver) return false;
+            return true;
+        }
+
+        function triggerBlock() {
+            if (isBlocked) return;
+            isBlocked = true;
+            setupBox.style.display = 'none';
+            viewer.style.display = 'none';
+            document.body.classList.remove('viewing');
+            blockScreen.style.display = 'block';
+            embedFrame.removeAttribute('src');
+        }
+
+        function runMobileGuard() {
+            if (!ENABLE_MOBILE_BLOCKER) return;
+            if (!isAllowedPhone()) triggerBlock();
+        }
+
+        runMobileGuard();
+        window.addEventListener('resize', runMobileGuard);
+        window.addEventListener('orientationchange', runMobileGuard);
+
+        function xorProcess(text, key) {
+            let result = '';
+            for (let i = 0; i < text.length; i++) {
+                const charCode = text.charCodeAt(i) ^ key.charCodeAt(i % key.length);
+                result += String.fromCharCode(charCode);
+            }
+            return result;
+        }
+
+        function decryptXOR(encodedText, key) {
+            const cleaned = encodedText.trim().replace(/\s/g, '');
+            const decodedBase64 = decodeURIComponent(escape(atob(cleaned)));
+            return xorProcess(decodedBase64, key);
+        }
+
+        function decryptPayload(cipherText) {
+            return decryptXOR(cipherText, SECRET_KEY).trim();
+        }
+
+        function getXstrFromUrl() {
+            const match = window.location.search.match(/[?&]xstr=([^&#]*)/);
+            if (!match || !match[1]) return null;
             try {
-                return decodeURIComponent(escape(binary)).trim();
+                return decodeURIComponent(match[1].replace(/\+/g, '%2B'));
             } catch {
-                return binary.trim();
+                return match[1];
             }
         }
 
@@ -270,95 +282,37 @@
             }, 4000);
         }
 
-        function togglePopup(show) {
-            if (show) {
-                popupOverlay.style.display = 'block';
-                requestAnimationFrame(() => popupOverlay.classList.add('show'));
-            } else {
-                popupOverlay.classList.remove('show');
-                setTimeout(() => {
-                    popupOverlay.style.display = 'none';
-                }, 300);
-            }
-        }
+        function processCipherData(cipherData) {
+            if (isBlocked) return;
 
-        function buildEpisodeUrl(epNumber) {
-            const url = new URL(baseUrl.href);
-            url.searchParams.set('ep', String(epNumber));
-            return url.href;
-        }
-
-        function loadEpisode(epNumber) {
-            currentEpisode = epNumber;
-            embedFrame.src = buildEpisodeUrl(epNumber);
-
-            document.querySelectorAll('.ep-btn').forEach((btn) => {
-                btn.classList.toggle('active', Number(btn.dataset.ep) === epNumber);
-            });
-        }
-
-        function renderEpisodes() {
-            epList.innerHTML = '';
-
-            for (let i = 1; i <= totalEpisodes; i++) {
-                const btn = document.createElement('button');
-                btn.type = 'button';
-                btn.className = 'ep-btn';
-                btn.dataset.ep = String(i);
-                btn.textContent = `Tập ${i}`;
-
-                btn.addEventListener('click', () => {
-                    loadEpisode(i);
-                    togglePopup(false);
-                });
-
-                epList.appendChild(btn);
-            }
-
-            loadEpisode(1);
-        }
-
-        function processBase64Data(base64Data) {
-            if (!base64Data) {
-                showError('Không có dữ liệu Base64');
+            if (!cipherData) {
+                showError('Không có dữ liệu');
                 return;
             }
 
             let decodedUrl;
             try {
-                decodedUrl = decodeBase64ToUrl(base64Data);
+                decodedUrl = decryptPayload(cipherData);
             } catch {
-                showError('Mã Base64 không hợp lệ');
+                showError('Mã không hợp lệ hoặc sai key');
                 return;
             }
 
-            let parsed;
+            let url;
             try {
-                parsed = new URL(normalizeUrl(decodedUrl));
+                url = new URL(normalizeUrl(decodedUrl)).href;
             } catch {
                 showError('Decode không ra URL hợp lệ');
                 return;
             }
 
-            const epParam = parsed.searchParams.get('ep');
-            const total = parseInt(epParam, 10);
-
-            if (!epParam || Number.isNaN(total) || total < 1) {
-                showError('URL phải có tham số ep=xx (số tập)');
-                return;
-            }
-
-            baseUrl = parsed;
-            totalEpisodes = total;
-
-            localStorage.setItem('embedBase64', base64Data.trim());
-
+            localStorage.setItem('embedCipher', cipherData.trim());
             document.body.classList.add('viewing');
-            renderEpisodes();
+            embedFrame.src = url;
         }
 
         function handleManualSubmit() {
-            processBase64Data(base64Input.value.trim());
+            processCipherData(base64Input.value.trim());
         }
 
         openBtn.addEventListener('click', handleManualSubmit);
@@ -367,21 +321,26 @@
             if (e.key === 'Enter' && (e.ctrlKey || e.metaKey)) handleManualSubmit();
         });
 
-        fabEpisodes.addEventListener('click', () => togglePopup(true));
-        popupClose.addEventListener('click', () => togglePopup(false));
-        popupOverlay.addEventListener('click', () => togglePopup(false));
-        document.getElementById('popup-content').addEventListener('click', (e) => e.stopPropagation());
+        function initApp() {
+            runMobileGuard();
+            if (isBlocked) return;
 
-        window.addEventListener('DOMContentLoaded', () => {
-            const xstr = new URLSearchParams(window.location.search).get('xstr');
+            // ?xstr=... → dùng trực tiếp làm data, giải mã và mở iframe (không cần nhập tay)
+            const xstr = getXstrFromUrl();
             if (xstr) {
-                processBase64Data(xstr);
+                processCipherData(xstr);
                 return;
             }
 
-            const saved = localStorage.getItem('embedBase64');
+            const saved = localStorage.getItem('embedCipher');
             if (saved) base64Input.value = saved;
-        });
+        }
+
+        if (document.readyState === 'loading') {
+            document.addEventListener('DOMContentLoaded', initApp);
+        } else {
+            initApp();
+        }
     </script>
 </body>
 </html>
