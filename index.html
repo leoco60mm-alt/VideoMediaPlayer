@@ -40,7 +40,7 @@
             margin: 0 0 4px;
         }
 
-        #base64-input {
+        #url-input {
             height: 120px;
             background: #222;
             color: #0f0;
@@ -143,6 +143,50 @@
             line-height: 1.5;
             margin: 0;
         }
+
+        #frame-blocked {
+            display: none;
+            position: absolute;
+            inset: 0;
+            z-index: 20;
+            background: rgba(0, 0, 0, 0.92);
+            padding: 24px;
+            flex-direction: column;
+            align-items: center;
+            justify-content: center;
+            text-align: center;
+            gap: 14px;
+        }
+
+        #frame-blocked.show { display: flex; }
+
+        #frame-blocked p {
+            margin: 0;
+            color: #ccc;
+            font-size: 14px;
+            line-height: 1.55;
+            max-width: 420px;
+        }
+
+        #frame-blocked .action-btn { margin-top: 4px; }
+
+        #open-tab-fab {
+            display: none;
+            position: fixed;
+            top: 12px;
+            right: 12px;
+            z-index: 105;
+            padding: 10px 14px;
+            background: rgba(0, 123, 255, 0.9);
+            color: #fff;
+            border: none;
+            border-radius: 8px;
+            font-size: 13px;
+            font-weight: 600;
+            cursor: pointer;
+        }
+
+        body.viewing #open-tab-fab { display: block; }
     </style>
 </head>
 <body>
@@ -154,31 +198,52 @@
 
     <div id="setup-box">
         <h3>Nhập dữ liệu</h3>
-        <textarea id="base64-input" placeholder="Dán mã đã mã hoá — hoặc mở link ?xstr=..."></textarea>
+        <textarea id="url-input" placeholder="Dán URL https://... — hoặc ?xstr=https://..."></textarea>
+        <p style="margin:0;font-size:12px;color:#888;line-height:1.45;">
+            Mở file qua <strong>http://localhost</strong> (không double-click file://).
+            Nhiều trang (vd. dramawave) chặn nhúng iframe — dùng «Mở tab mới» khi bị chặn.
+        </p>
         <button type="button" class="action-btn" id="open-btn">Xem ngay</button>
     </div>
 
     <div id="viewer">
         <div id="iframe-crop">
-            <iframe id="embed-frame" title="Trang web nhúng" sandbox="allow-scripts allow-same-origin allow-forms allow-fullscreen"></iframe>
+            <iframe
+                id="embed-frame"
+                title="Trang web nhúng"
+                sandbox="allow-scripts allow-forms allow-popups allow-popups-to-escape-sandbox"
+                allow="fullscreen *; autoplay *; encrypted-media *; picture-in-picture *"
+                allowfullscreen
+            ></iframe>
+            <div id="frame-blocked">
+                <p id="frame-blocked-msg">Trang này không cho phép hiển thị trong khung (X-Frame-Options / CSP).</p>
+                <button type="button" class="action-btn" id="open-external-btn">Mở tab mới</button>
+                <button type="button" class="action-btn" id="back-setup-btn" style="background:#444;">Quay lại nhập URL</button>
+            </div>
         </div>
     </div>
 
     <div id="error-msg"></div>
+    <button type="button" id="open-tab-fab">Mở tab mới</button>
 
     <script>
-        const ENABLE_MOBILE_BLOCKER = true;
-        const SECRET_KEY = 'G0tbc7e9BrgUZiwGk1W3Y30M';
+        const ENABLE_MOBILE_BLOCKER = false;
 
-        const base64Input = document.getElementById('base64-input');
+        const urlInput = document.getElementById('url-input');
         const openBtn = document.getElementById('open-btn');
         const embedFrame = document.getElementById('embed-frame');
         const errorMsg = document.getElementById('error-msg');
         const blockScreen = document.getElementById('block-screen');
         const setupBox = document.getElementById('setup-box');
         const viewer = document.getElementById('viewer');
+        const frameBlocked = document.getElementById('frame-blocked');
+        const frameBlockedMsg = document.getElementById('frame-blocked-msg');
+        const openExternalBtn = document.getElementById('open-external-btn');
+        const backSetupBtn = document.getElementById('back-setup-btn');
+        const openTabFab = document.getElementById('open-tab-fab');
 
         let isBlocked = false;
+        let lastEmbedUrl = '';
 
         function isPhoneUserAgent() {
             if (navigator.userAgentData && typeof navigator.userAgentData.mobile === 'boolean') {
@@ -240,25 +305,6 @@
         window.addEventListener('resize', runMobileGuard);
         window.addEventListener('orientationchange', runMobileGuard);
 
-        function xorProcess(text, key) {
-            let result = '';
-            for (let i = 0; i < text.length; i++) {
-                const charCode = text.charCodeAt(i) ^ key.charCodeAt(i % key.length);
-                result += String.fromCharCode(charCode);
-            }
-            return result;
-        }
-
-        function decryptXOR(encodedText, key) {
-            const cleaned = encodedText.trim().replace(/\s/g, '');
-            const decodedBase64 = decodeURIComponent(escape(atob(cleaned)));
-            return xorProcess(decodedBase64, key);
-        }
-
-        function decryptPayload(cipherText) {
-            return decryptXOR(cipherText, SECRET_KEY).trim();
-        }
-
         function getXstrFromUrl() {
             const match = window.location.search.match(/[?&]xstr=([^&#]*)/);
             if (!match || !match[1]) return null;
@@ -279,45 +325,81 @@
             errorMsg.style.display = 'block';
             setTimeout(() => {
                 errorMsg.style.display = 'none';
-            }, 4000);
+            }, 5000);
         }
 
-        function processCipherData(cipherData) {
+        function isFileProtocol() {
+            return location.protocol === 'file:';
+        }
+
+        function hideFrameBlocked() {
+            frameBlocked.classList.remove('show');
+        }
+
+        function showFrameBlocked(message) {
+            frameBlockedMsg.textContent = message;
+            frameBlocked.classList.add('show');
+        }
+
+        function returnToSetup() {
+            hideFrameBlocked();
+            document.body.classList.remove('viewing');
+            embedFrame.removeAttribute('src');
+        }
+
+        function openInNewTab() {
+            if (lastEmbedUrl) window.open(lastEmbedUrl, '_blank', 'noopener,noreferrer');
+        }
+
+        openExternalBtn.addEventListener('click', openInNewTab);
+        openTabFab.addEventListener('click', openInNewTab);
+        backSetupBtn.addEventListener('click', returnToSetup);
+
+        function openEmbedUrl(raw) {
             if (isBlocked) return;
 
-            if (!cipherData) {
-                showError('Không có dữ liệu');
-                return;
-            }
-
-            let decodedUrl;
-            try {
-                decodedUrl = decryptPayload(cipherData);
-            } catch {
-                showError('Mã không hợp lệ hoặc sai key');
+            const value = (raw || '').trim();
+            if (!value) {
+                showError('Không có URL');
                 return;
             }
 
             let url;
             try {
-                url = new URL(normalizeUrl(decodedUrl)).href;
+                url = new URL(normalizeUrl(value)).href;
             } catch {
-                showError('Decode không ra URL hợp lệ');
+                showError('URL không hợp lệ');
                 return;
             }
 
-            localStorage.setItem('embedCipher', cipherData.trim());
+            if (isFileProtocol()) {
+                showError('Đang mở bằng file:// — hãy chạy local server (vd. npx serve) rồi mở http://localhost/.../EmbedUrl.html');
+            }
+
+            lastEmbedUrl = url;
+            localStorage.setItem('embedUrl', value);
+            hideFrameBlocked();
             document.body.classList.add('viewing');
             embedFrame.src = url;
+
+            try {
+                const host = new URL(url).hostname;
+                if (/dramafren|dramawave|netshort/i.test(host)) {
+                    showFrameBlocked(
+                        '«' + host + '» thường chặn iframe (X-Frame-Options / 403). ' +
+                        'EmbedUrl không thể ép hiển thị trong khung — bấm «Mở tab mới».'
+                    );
+                }
+            } catch (_) {}
         }
 
         function handleManualSubmit() {
-            processCipherData(base64Input.value.trim());
+            openEmbedUrl(urlInput.value);
         }
 
         openBtn.addEventListener('click', handleManualSubmit);
 
-        base64Input.addEventListener('keydown', (e) => {
+        urlInput.addEventListener('keydown', (e) => {
             if (e.key === 'Enter' && (e.ctrlKey || e.metaKey)) handleManualSubmit();
         });
 
@@ -325,15 +407,18 @@
             runMobileGuard();
             if (isBlocked) return;
 
-            // ?xstr=... → dùng trực tiếp làm data, giải mã và mở iframe (không cần nhập tay)
+            if (isFileProtocol()) {
+                showError('Cảnh báo: mở EmbedUrl.html bằng file:// dễ lỗi iframe. Dùng http://localhost thay thế.');
+            }
+
             const xstr = getXstrFromUrl();
             if (xstr) {
-                processCipherData(xstr);
+                openEmbedUrl(xstr);
                 return;
             }
 
-            const saved = localStorage.getItem('embedCipher');
-            if (saved) base64Input.value = saved;
+            const saved = localStorage.getItem('embedUrl');
+            if (saved) urlInput.value = saved;
         }
 
         if (document.readyState === 'loading') {
