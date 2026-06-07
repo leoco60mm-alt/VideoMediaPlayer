@@ -90,13 +90,6 @@
         }
         .ep-item:hover { background: #3a4458; }
         .ep-item .ep-num { font-weight: 700; color: #fff; display: block; margin-bottom: 4px; }
-        .fallback { margin-top: 24px; padding-top: 20px; border-top: 1px solid #333; }
-        .fallback summary { cursor: pointer; color: #7eb8ff; font-size: 0.9rem; }
-        #htmlPaste {
-            width: 100%; height: 100px; margin-top: 10px;
-            padding: 10px; border-radius: 8px; border: 1px solid #333;
-            background: #1a1d24; color: #ccc; font-family: monospace; font-size: 12px;
-        }
         code { background: #252830; padding: 2px 6px; border-radius: 4px; font-size: 0.85em; }
     </style>
 </head>
@@ -105,10 +98,8 @@
         <h1>Giải mã dữ liệu NetShort</h1>
         <p class="hint">
             Dán mã chia sẻ <code>MSC1...</code>, link NetShort, hoặc externalId. Nếu là mã MSC1,
-            trang sẽ hỏi mật khẩu để giải mã externalId trước khi quét tập.
-            Trình duyệt không gọi trực tiếp dramafren được (CORS) — cần
-            <strong>proxy local</strong>: mở terminal trong thư mục này, chạy
-            <code>node manage-movie-proxy.js</code>, giữ cửa sổ chạy, rồi bấm Giải mã dữ liệu.
+            trang sẽ hỏi mật khẩu để giải mã externalId. Sau đó frontend gọi <code>/api/detail</code>
+            trên Vercel để server fetch trang detail và quét tập, tránh CORS của trình duyệt.
         </p>
 
         <label for="urlInput">Mã chia sẻ / Link phim / externalId</label>
@@ -127,21 +118,10 @@
             <div class="ep-grid" id="epGrid"></div>
         </div>
 
-        <details class="fallback">
-            <summary>Fetch lỗi? Dán HTML từ Postman / trình duyệt</summary>
-            <p class="hint" style="margin-top:10px;margin-bottom:8px;">
-                Copy toàn bộ HTML trang detail (Postman GET) vào ô dưới, rồi bấm Parse HTML.
-            </p>
-            <textarea id="htmlPaste" placeholder="Dán HTML response…"></textarea>
-            <div class="row" style="margin-top:10px;">
-                <button type="button" class="btn btn-secondary" id="btnParseHtml">Parse HTML</button>
-            </div>
-        </details>
     </div>
 
     <script>
         const DRAMAFREN_BASE = 'https://netshort.dramafren.org/';
-        const LOCAL_PROXY = 'http://127.0.0.1:3928/proxy?url=';
 
         let lastEpisodes = [];
         let lastMovieId = null;
@@ -345,63 +325,31 @@
             return d.innerHTML;
         }
 
-        async function tryFetchText(label, fetchUrl, options) {
-            const res = await fetch(fetchUrl, options);
-            const text = await res.text();
-            if (!res.ok) throw new Error(label + ' HTTP ' + res.status);
-            if (!text || text.length < 200) throw new Error(label + ': response quá ngắn');
-            return { text: text, via: label };
-        }
-
-        async function fetchViaAllOrigins(url) {
-            const api = 'https://api.allorigins.win/get?url=' + encodeURIComponent(url);
-            const res = await fetch(api);
-            const data = await res.json();
-            if (!res.ok || !data) throw new Error('AllOrigins HTTP ' + res.status);
-            const html = data.contents || '';
-            if (!html || html.length < 200) throw new Error('AllOrigins: nội dung rỗng');
-            return { text: html, via: 'AllOrigins' };
-        }
-
-        async function fetchViaCorsProxy(url) {
-            const api = 'https://corsproxy.io/?' + encodeURIComponent(url);
-            return tryFetchText('CorsProxy.io', api, { mode: 'cors' });
-        }
-
         async function fetchHtml(url) {
-            const errors = [];
-
-            const attempts = [
-                function () {
-                    return tryFetchText('Proxy local', LOCAL_PROXY + encodeURIComponent(url), {
-                        mode: 'cors',
-                        cache: 'no-store',
-                    });
-                },
-                function () { return fetchViaAllOrigins(url); },
-                function () { return fetchViaCorsProxy(url); },
-                function () {
-                    return tryFetchText('Trực tiếp', url, {
-                        mode: 'cors',
-                        credentials: 'omit',
-                        headers: { Accept: 'text/html' },
-                    });
-                },
-            ];
-
-            for (let i = 0; i < attempts.length; i++) {
+            const target = new URL(url);
+            const movieId = target.searchParams.get('id');
+            const apiUrl = '/api/detail?id=' + encodeURIComponent(movieId);
+            const res = await fetch(apiUrl, {
+                method: 'GET',
+                headers: { Accept: 'text/html' },
+            });
+            const text = await res.text();
+            if (!res.ok) {
                 try {
-                    const result = await attempts[i]();
-                    return result;
-                } catch (e) {
-                    errors.push((i + 1) + '. ' + (e.message || e));
+                    const data = JSON.parse(text);
+                    throw new Error(
+                        'API fetch HTTP ' + res.status +
+                        (data.status ? ' / upstream ' + data.status : '') +
+                        (data.snippet ? '\n' + data.snippet : '') +
+                        (data.message ? '\n' + data.message : '')
+                    );
+                } catch (parseErr) {
+                    if (parseErr.message && parseErr.message.startsWith('API fetch HTTP')) throw parseErr;
+                    throw new Error('API fetch HTTP ' + res.status + '\n' + text.slice(0, 500));
                 }
             }
-
-            throw new Error(
-                'Không tải được HTML.\n' + errors.join('\n') +
-                '\n\n→ Chạy: node manage-movie-proxy.js\n→ Hoặc dán HTML từ Postman (mục bên dưới).'
-            );
+            if (!text || text.length < 200) throw new Error('Response quá ngắn hoặc rỗng.');
+            return text;
         }
 
         function finishScan(movieId, episodes, viaNote) {
@@ -442,13 +390,13 @@
 
             const btn = document.getElementById('btnScan');
             btn.disabled = true;
-            setStatus('loading', 'Đang tải… (ưu tiên proxy local :3928)');
+            setStatus('loading', 'Đang fetch trang detail…');
             document.getElementById('epList').classList.remove('show');
 
             try {
-                const fetched = await fetchHtml(detailUrl);
-                const episodes = parseEpisodesFromHtml(fetched.text, movieId);
-                finishScan(movieId, episodes, fetched.via);
+                const html = await fetchHtml(detailUrl);
+                const episodes = parseEpisodesFromHtml(html, movieId);
+                finishScan(movieId, episodes);
             } catch (err) {
                 console.error(err);
                 setStatus('error', err.message || String(err));
@@ -458,25 +406,7 @@
             }
         }
 
-        function parsePastedHtml() {
-            const input = document.getElementById('urlInput').value.trim();
-            const movieId = lastMovieId || (/^\d{10,}$/.test(input) ? input : extractMovieId(input));
-            if (!movieId) {
-                setStatus('error', 'Cần externalId/link NetShort hợp lệ trước khi parse HTML. Nếu đang dùng mã MSC1, hãy bấm Giải mã dữ liệu trước.');
-                return;
-            }
-            const html = document.getElementById('htmlPaste').value.trim();
-            if (!html) {
-                setStatus('error', 'Chưa dán HTML.');
-                return;
-            }
-            showMeta(movieId, buildDetailUrl(movieId));
-            const episodes = parseEpisodesFromHtml(html, movieId);
-            finishScan(movieId, episodes, 'HTML dán tay');
-        }
-
         document.getElementById('btnScan').addEventListener('click', scanEpisodes);
-        document.getElementById('btnParseHtml').addEventListener('click', parsePastedHtml);
         document.getElementById('btnCopy').addEventListener('click', function () {
             if (!lastEpisodes.length) return;
             const json = JSON.stringify(lastEpisodes, null, 2);
