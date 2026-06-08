@@ -679,7 +679,8 @@
                 name: item.name || ('Tập ' + epText),
                 watchUrl: item.watchUrl || '',
                 videoUrl: item.videoUrl || item.urlVideo || item.url || '',
-                subtitleUrl: item.subtitleUrl || item.subUrl || item.urlSub || null
+                subtitleUrl: item.subtitleUrl || item.subUrl || item.urlSub || null,
+                loaded: !!(item.videoUrl || item.urlVideo || item.url)
             };
         }
 
@@ -704,11 +705,11 @@
             }
 
             episodes = episodes.map(normalizeEpisode).filter(function(ep) {
-                return !!ep.videoUrl;
+                return !!(ep.videoUrl || ep.watchUrl);
             });
 
             if (!episodes.length) {
-                throw new Error('Không có tập nào có videoUrl để phát.');
+                throw new Error('Không có tập nào để phát.');
             }
 
             return episodes;
@@ -720,6 +721,12 @@
             return base +
                 '/?IDMovie=' + encodeURIComponent(payload.IDMovie) +
                 '&type=' + encodeURIComponent(payload.type);
+        }
+
+        function buildWatchApiUrl(watchUrl) {
+            const base = API_BASE.replace(/\/+$/, '');
+            if (!base) throw new Error('Chưa nhập API server.');
+            return base + '/?url=' + encodeURIComponent(watchUrl);
         }
 
         function getClientDeviceHeaders() {
@@ -910,7 +917,37 @@
             btn.disabled = episodesList.length === 0 || currentEpisodeIndex >= episodesList.length - 1;
         }
 
-        function playEpisodeByIndex(index, fromAuto, startTime) {
+        async function loadEpisodeMedia(ep) {
+            if (ep.videoUrl) return ep;
+            if (!ep.watchUrl) throw new Error('Tập này thiếu watchUrl.');
+
+            showToast('Đang tải tập ' + ep.ep + '...');
+            const res = await fetch(buildWatchApiUrl(ep.watchUrl), {
+                method: 'GET',
+                headers: getClientDeviceHeaders()
+            });
+            const data = await res.json();
+            if (!res.ok || data.success === false) {
+                throw new Error(data.message || ('API HTTP ' + res.status));
+            }
+
+            const episodeData = data.episode || data;
+            const loadedEpisode = normalizeEpisode({
+                ...ep,
+                ...episodeData,
+                watchUrl: episodeData.watchUrl || ep.watchUrl
+            });
+
+            if (!loadedEpisode.videoUrl) {
+                throw new Error('API chưa trả videoUrl cho tập này.');
+            }
+
+            Object.assign(ep, loadedEpisode, { loaded: true });
+            saveSessionState();
+            return ep;
+        }
+
+        async function playEpisodeByIndex(index, fromAuto, startTime) {
             if (index < 0 || index >= episodesList.length) return false;
             currentEpisodeIndex = index;
             document.querySelectorAll('.ep-btn').forEach(function(btn) {
@@ -918,11 +955,24 @@
             });
             const activeBtn = document.querySelector('.ep-btn[data-index="' + index + '"]');
             if (activeBtn) activeBtn.classList.add('active');
-            saveSessionState({ currentTime: startTime || 0 });
-            playVideo(episodesList[index], startTime || 0);
-            updateNextEpButton();
-            if (!fromAuto) togglePopup(false);
-            return true;
+            const ep = episodesList[index];
+            const title = document.getElementById('episode-title');
+            title.textContent = (ep.name || ('Tập ' + ep.ep)) + ' - Đang tải...';
+
+            try {
+                saveSessionState({ currentTime: startTime || 0 });
+                const loadedEp = await loadEpisodeMedia(ep);
+                playVideo(loadedEp, startTime || 0);
+                updateNextEpButton();
+                if (!fromAuto) togglePopup(false);
+                return true;
+            } catch (error) {
+                console.error(error);
+                title.textContent = ep.name || ('Tập ' + ep.ep);
+                showToast('Không tải được tập này');
+                updateNextEpButton();
+                return false;
+            }
         }
 
         function playNextEpisode(fromAuto) {
@@ -930,7 +980,8 @@
                 if (!fromAuto) showToast('Đã là tập cuối');
                 return false;
             }
-            return playEpisodeByIndex(currentEpisodeIndex + 1, fromAuto);
+            playEpisodeByIndex(currentEpisodeIndex + 1, fromAuto);
+            return true;
         }
 
         function renderEpisodes(episodes, initialIndex, initialTime) {
@@ -1088,7 +1139,7 @@
             }
 
             const episodes = state.episodes.map(normalizeEpisode).filter(function(ep) {
-                return !!ep.videoUrl;
+                return !!(ep.videoUrl || ep.watchUrl);
             });
             if (!episodes.length) {
                 clearSessionState();
