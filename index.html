@@ -1158,8 +1158,32 @@
             saveSessionState();
         });
 
+        function hydrateInputFromUrlParams() {
+            const params = new URLSearchParams(window.location.search);
+            const data = params.get('data');
+
+            if (!data) {
+                return false;
+            }
+
+            const input = document.getElementById('encryptedInput');
+            if (input) {
+                input.value = data.trim();
+            }
+
+            return true;
+        }
+
         window.addEventListener('DOMContentLoaded', function() {
+            const hasDataParam = hydrateInputFromUrlParams();
+
             setupCustomPlayer();
+
+            if (hasDataParam) {
+                loadMovieData();
+                return;
+            }
+
             restoreSessionIfAvailable();
         });
     </script>
