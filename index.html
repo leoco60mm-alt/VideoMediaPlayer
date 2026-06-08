@@ -47,7 +47,8 @@
             font-size: 14px;
             font-weight: 600;
         }
-        #encryptedInput {
+        #encryptedInput,
+        #passwordInput {
             width: 100%;
             padding: 14px 16px;
             border: 1px solid #333;
@@ -57,7 +58,11 @@
             font-size: 15px;
             font-family: ui-monospace, Consolas, monospace;
         }
-        #encryptedInput:focus {
+        #passwordInput {
+            margin-top: 10px;
+        }
+        #encryptedInput:focus,
+        #passwordInput:focus {
             outline: none;
             border-color: #e50914;
         }
@@ -448,6 +453,7 @@
     <div id="setup-box">
         <div class="setup-wrap">
             <input id="encryptedInput" placeholder="Nhập mã" spellcheck="false" autocomplete="off">
+            <input id="passwordInput" type="password" value="1234" placeholder="Mật khẩu giải mã" spellcheck="false" autocomplete="current-password">
 
             <div class="row">
                 <button type="button" class="btn btn-primary" id="btnLoad">Lấy dữ liệu</button>
@@ -627,43 +633,38 @@
             return new TextDecoder().decode(plainBuffer).trim();
         }
 
-        function parseMoviePayload(jsonText) {
-            let data;
+        function parseMyUrlFromShareCodePlaintext(plaintext) {
+            const trimmed = (plaintext || '').trim();
+            let watchUrl;
+
             try {
-                data = JSON.parse(jsonText);
+                watchUrl = new URL(trimmed);
             } catch (error) {
-                throw new Error('Giải mã thành công nhưng dữ liệu không phải JSON hợp lệ.');
+                throw new Error('Giải mã thành công nhưng dữ liệu không phải URL hợp lệ.');
             }
 
-            const movieId = data.IDMovie || data.idMovie || data.movieId || data.id;
-            const type = Number(data.type);
-
-            if (!movieId) {
-                throw new Error('JSON thiếu IDMovie.');
-            }
-            if (![1, 2, 3].includes(type)) {
-                throw new Error('JSON type không hợp lệ.');
+            const protectedData = watchUrl.searchParams.get('data');
+            if (!protectedData || !/^MSU1\./i.test(protectedData)) {
+                throw new Error('Link bảo vệ không hợp lệ: thiếu tham số data=MSU1...');
             }
 
-            return {
-                IDMovie: String(movieId).trim(),
-                type: type
-            };
+            return watchUrl.toString();
         }
 
-        async function resolveEncryptedPayload(encryptedText) {
+        async function resolveProtectedWatchUrl(encryptedText, password) {
             const raw = (encryptedText || '').trim();
             if (!raw) {
                 throw new Error('Chưa nhập dữ liệu đã mã hoá.');
             }
 
-            const password = prompt('Nhập mật khẩu giải mã (để trống nếu không có):', '');
-            if (password === null) {
-                throw new Error('Đã hủy nhập mật khẩu.');
+            let decryptedText;
+            try {
+                decryptedText = await decryptShareCode(raw, password || '');
+            } catch (error) {
+                throw new Error('Giải mã MSC1 thất bại. Kiểm tra mật khẩu hoặc mã chia sẻ.');
             }
 
-            const decryptedText = await decryptShareCode(raw, password);
-            return parseMoviePayload(decryptedText);
+            return parseMyUrlFromShareCodePlaintext(decryptedText);
         }
 
         function escapeHtml(value) {
@@ -683,23 +684,37 @@
             };
         }
 
-        function normalizeApiData(data) {
-            if (!data || data.success === false) {
-                throw new Error((data && data.message) || 'API trả về dữ liệu không hợp lệ.');
+        function mapWatchServerResponse(data) {
+            if (!data || typeof data !== 'object') {
+                throw new Error('API server trả dữ liệu không hợp lệ.');
             }
 
+            if (data.success === false) {
+                const message = data.message || data.error || 'API server từ chối yêu cầu.';
+                if (/expir/i.test(message)) {
+                    throw new Error('Link đã hết hạn: ' + message);
+                }
+                throw new Error(message);
+            }
+
+            return data;
+        }
+
+        function normalizeApiData(data) {
+            const mapped = mapWatchServerResponse(data);
+
             let episodes = [];
-            if (Array.isArray(data.episodes)) {
-                episodes = data.episodes;
-            } else if (data.episode) {
-                episodes = [data.episode];
-            } else if (data.videoUrl) {
+            if (Array.isArray(mapped.episodes)) {
+                episodes = mapped.episodes;
+            } else if (mapped.episode) {
+                episodes = [mapped.episode];
+            } else if (mapped.videoUrl) {
                 episodes = [{
                     ep: '01',
                     name: 'Tập 01',
-                    videoUrl: data.videoUrl,
-                    subtitleUrl: data.subtitleUrl || null,
-                    watchUrl: data.watchUrl || ''
+                    videoUrl: mapped.videoUrl,
+                    subtitleUrl: mapped.subtitleUrl || null,
+                    watchUrl: mapped.watchUrl || ''
                 }];
             }
 
@@ -714,12 +729,13 @@
             return episodes;
         }
 
-        function buildApiUrl(payload) {
+        function buildProtectedWatchRequestUrl(myUrl) {
             const base = API_BASE.replace(/\/+$/, '');
-            if (!base) throw new Error('Chưa nhập API server.');
-            return base +
-                '/?IDMovie=' + encodeURIComponent(payload.IDMovie) +
-                '&type=' + encodeURIComponent(payload.type);
+            if (!base) {
+                throw new Error('Chưa cấu hình API server.');
+            }
+
+            return base + '?data=' + encodeURIComponent(myUrl);
         }
 
         function getClientDeviceHeaders() {
@@ -740,21 +756,36 @@
 
         async function loadMovieData() {
             const encryptedText = document.getElementById('encryptedInput').value.trim();
+            const password = document.getElementById('passwordInput').value;
             const btn = document.getElementById('btnLoad');
 
             try {
                 btn.disabled = true;
-                setStatus('loading', 'Đang xử lý dữ liệu...');
+                setStatus('loading', 'Đang giải mã mã chia sẻ...');
 
-                const payload = await resolveEncryptedPayload(encryptedText);
+                const myUrl = await resolveProtectedWatchUrl(encryptedText, password);
 
-                const res = await fetch(buildApiUrl(payload), {
+                setStatus('loading', 'Đang lấy danh sách tập từ server...');
+
+                const apiUrl = buildProtectedWatchRequestUrl(myUrl);
+                const res = await fetch(apiUrl, {
                     method: 'GET',
                     headers: getClientDeviceHeaders()
                 });
-                const data = await res.json();
-                if (!res.ok || data.success === false) {
-                    throw new Error(data.message || ('API HTTP ' + res.status));
+
+                let data;
+                try {
+                    data = await res.json();
+                } catch (parseError) {
+                    throw new Error('API server trả response không phải JSON (HTTP ' + res.status + ').');
+                }
+
+                if (!res.ok) {
+                    const message = (data && (data.message || data.error)) || ('API server HTTP ' + res.status);
+                    if (/expir/i.test(message)) {
+                        throw new Error('Link đã hết hạn: ' + message);
+                    }
+                    throw new Error(message);
                 }
 
                 const episodes = normalizeApiData(data);
@@ -765,7 +796,7 @@
                 enterPlayerMode();
             } catch (err) {
                 console.error(err);
-                setStatus('error', 'Không xử lý được dữ liệu.');
+                setStatus('error', err.message || 'Không xử lý được dữ liệu.');
             } finally {
                 btn.disabled = false;
             }
@@ -1118,6 +1149,9 @@
             playNextEpisode(false);
         });
         document.getElementById('encryptedInput').addEventListener('keydown', function(e) {
+            if (e.key === 'Enter') loadMovieData();
+        });
+        document.getElementById('passwordInput').addEventListener('keydown', function(e) {
             if (e.key === 'Enter') loadMovieData();
         });
         window.addEventListener('pagehide', function() {
