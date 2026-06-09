@@ -577,6 +577,7 @@
         let currentEpisodeIndex = 0;
         let lastSessionSaveAt = 0;
         let playerLoadingTimer = null;
+        let stalledLoadingTimer = null;
         const API_BASE = '/api';
         const SESSION_KEY = 'movieCrawlerPlayerState';
         const LOCAL_CACHE_KEY = 'movieCrawlerPlayerLocalCache';
@@ -606,9 +607,25 @@
             if (!overlay) return;
 
             clearTimeout(playerLoadingTimer);
+            clearTimeout(stalledLoadingTimer);
             playerLoadingTimer = null;
+            stalledLoadingTimer = null;
             overlay.classList.remove('show');
             overlay.setAttribute('aria-hidden', 'true');
+        }
+
+        function showStalledLoadingIfNeeded(player) {
+            clearTimeout(stalledLoadingTimer);
+
+            const startTime = player.currentTime || 0;
+            stalledLoadingTimer = setTimeout(function() {
+                const currentTime = player.currentTime || 0;
+                const isStillStalled = Math.abs(currentTime - startTime) < 0.05;
+
+                if (!player.paused && !player.ended && !isSeeking && isStillStalled) {
+                    showPlayerLoading('Đang tải thêm...', 0);
+                }
+            }, 2000);
         }
 
         function setStatus(type, message) {
@@ -1034,10 +1051,10 @@
                 showPlayerLoading('Đang tải phim...');
             });
             player.addEventListener('waiting', function() {
-                showPlayerLoading('Mạng chậm, đang tải thêm...');
+                showStalledLoadingIfNeeded(player);
             });
             player.addEventListener('stalled', function() {
-                showPlayerLoading('Đường truyền bị chậm...');
+                showStalledLoadingIfNeeded(player);
             });
             player.addEventListener('seeking', function() {
                 showPlayerLoading('Đang tua...');
@@ -1049,6 +1066,7 @@
             player.addEventListener('loadeddata', hidePlayerLoading);
             player.addEventListener('timeupdate', updateTimeUi);
             player.addEventListener('timeupdate', function() {
+                hidePlayerLoading();
                 const now = Date.now();
                 if (now - lastSessionSaveAt > 5000) {
                     lastSessionSaveAt = now;
@@ -1198,19 +1216,11 @@
                     hlsInstance.on(Hls.Events.MANIFEST_PARSED, function() {
                         showPlayerLoading('Đang chuẩn bị phát...', 0);
                     });
-                    hlsInstance.on(Hls.Events.LEVEL_LOADING, function() {
-                        showPlayerLoading('Đang tải chất lượng video...');
-                    });
-                    hlsInstance.on(Hls.Events.FRAG_LOADING, function() {
-                        showPlayerLoading('Đang tải dữ liệu phim...', 800);
-                    });
                     hlsInstance.on(Hls.Events.FRAG_BUFFERED, hidePlayerLoading);
                     hlsInstance.on(Hls.Events.ERROR, function(event, data) {
                         if (data && data.fatal) {
                             hidePlayerLoading();
-                            return;
                         }
-                        showPlayerLoading('Mạng chậm, đang thử tải lại...');
                     });
                     hlsInstance.loadSource(videoUrl);
                     hlsInstance.attachMedia(player);
