@@ -1086,22 +1086,20 @@
             player.addEventListener('error', function() {
                 if (!player.error) return;
 
-                // Bỏ qua lỗi ngắt kết nối chủ động (mã 3) do gọi player.load()
+                // 1. Chốt chặn quan trọng nhất: Nếu video đang phát qua HLS (nguồn là blob:),
+                // mọi lỗi sẽ do hlsInstance tự xử lý. Thẻ video Native không được phép báo lỗi.
+                const currentSrc = player.currentSrc || player.src || '';
+                if (currentSrc.startsWith('blob:') || hlsInstance) {
+                    return;
+                }
+
+                // 2. Bỏ qua lỗi ngắt kết nối chủ động (mã 3) do gọi player.load()
                 if (player.error.code === 3) {
                     return;
                 }
 
-                // Bỏ qua lỗi "Không hỗ trợ" (mã 4) nếu thẻ video rỗng (lỗi ảo lúc dọn rác)
-                if (player.error.code === 4) {
-                    const hasSrc = player.getAttribute('src');
-                    const hasSourceTag = player.querySelector('source');
-                    if (!hasSrc && !hasSourceTag) {
-                        return;
-                    }
-                }
-
-                // Bỏ qua nếu đang xử lý bằng HLS.js (HLS có cơ chế báo lỗi riêng)
-                if (hlsInstance) {
+                // 3. Bỏ qua nếu thẻ video đang rỗng (lỗi ảo lúc dọn rác)
+                if (player.error.code === 4 && !currentSrc && !player.querySelector('source')) {
                     return;
                 }
 
@@ -1110,8 +1108,6 @@
                 }
                 
                 hidePlayerLoading();
-                
-                // Đổi text để biết chắc chắn link mp4/video có vấn đề thật
                 showToast('Lỗi thẻ Video (Mã ' + player.error.code + '): Link lỗi hoặc định dạng không hỗ trợ'); 
             });
 
@@ -1211,7 +1207,9 @@
             hidePlayerLoading();
             player.pause();
 
+            let wasHls = false;
             if (hlsInstance) {
+                wasHls = true;
                 try {
                     hlsInstance.stopLoad();
                     hlsInstance.detachMedia();
@@ -1220,10 +1218,14 @@
                 hlsInstance = null;
             }
             
-            // CỰC KỲ QUAN TRỌNG: Xóa src và dọn sạch cả các thẻ <source> bên trong
             player.removeAttribute('src');
             player.innerHTML = ''; 
-            player.load(); 
+            
+            // CHỈ gọi load() nếu trước đó dùng file MP4 thuần.
+            // Nếu dùng HLS, destroy() ở trên đã dọn sạch. Gọi load() sẽ gây lỗi "chết luồng" tập tiếp theo.
+            if (!wasHls) {
+                player.load(); 
+            }
 
             if (currentSubtitleBlobUrl) {
                 URL.revokeObjectURL(currentSubtitleBlobUrl);
