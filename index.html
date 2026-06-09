@@ -1084,9 +1084,15 @@
                 playNextEpisode(true);
             });
             player.addEventListener('error', function() {
+                // Thêm dòng này: Bỏ qua báo cáo lỗi từ thẻ video nếu HLS.js đang đảm nhận
+                if (hlsInstance) {
+                    return;
+                }
+
                 if (isSwitchingEpisode || !player.error) {
                     return;
                 }
+                
                 hidePlayerLoading();
                 showToast('Không phát được video này');
             });
