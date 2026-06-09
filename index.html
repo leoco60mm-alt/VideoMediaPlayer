@@ -766,35 +766,13 @@
             };
         }
 
-        function formatApiErrorMessage(message) {
-            const text = String(message || '');
-
-            if (/browser worker is offline/i.test(text) || /cannot connect to chrome cdp/i.test(text)) {
-                return 'Dramawave browser worker trên VPS chưa sẵn sàng. Hãy mở Chrome bằng remote debugging port 9222, pass Cloudflare một lần, rồi khởi động lại API server.';
-            }
-
-            if (/cloudflare challenge not passed/i.test(text)) {
-                return 'Chrome trên VPS chưa vượt Cloudflare. Mở https://dramawave.dramafren.org/ trên VPS, hoàn thành xác minh rồi thử lại.';
-            }
-
-            if (/browser job timed out/i.test(text)) {
-                return 'VPS browser worker xử lý quá lâu. Kiểm tra Chrome/Playwright trên VPS còn chạy và Dramawave load được không.';
-            }
-
-            return text;
-        }
+        const LOAD_DATA_MESSAGE = 'Đang lấy dữ liệu...';
+        const LOAD_DATA_FAILED_MESSAGE = 'Lấy dữ liệu thất bại';
+        const CLIENT_FETCH_TIMEOUT_MS = 30000;
 
         function mapWatchServerResponse(data) {
-            if (!data || typeof data !== 'object') {
-                throw new Error('API server trả dữ liệu không hợp lệ.');
-            }
-
-            if (data.success === false) {
-                const message = data.message || data.error || 'API server từ chối yêu cầu.';
-                if (/expir/i.test(message)) {
-                    throw new Error('Link đã hết hạn: ' + message);
-                }
-                throw new Error(formatApiErrorMessage(message));
+            if (!data || typeof data !== 'object' || data.success === false) {
+                throw new Error(LOAD_DATA_FAILED_MESSAGE);
             }
 
             return data;
@@ -823,19 +801,24 @@
             });
 
             if (!episodes.length) {
-                throw new Error('Không có tập nào có videoUrl để phát.');
+                throw new Error(LOAD_DATA_FAILED_MESSAGE);
             }
 
             return episodes;
         }
 
-        function buildProtectedWatchRequestUrl(myUrl) {
+        function buildProtectedWatchRequestUrl(myUrl, forceRefresh) {
             const base = API_BASE.replace(/\/+$/, '');
             if (!base) {
                 throw new Error('Chưa cấu hình API server.');
             }
 
-            return base + '?data=' + encodeURIComponent(myUrl);
+            let requestUrl = base + '?data=' + encodeURIComponent(myUrl);
+            if (forceRefresh) {
+                requestUrl += '&forceRefresh=1';
+            }
+
+            return requestUrl;
         }
 
         function getClientDeviceHeaders() {
@@ -854,55 +837,85 @@
             };
         }
 
-        async function loadMovieData() {
+        async function fetchWithTimeout(url, options, timeoutMs) {
+            const controller = new AbortController();
+            const timeoutId = setTimeout(function() {
+                controller.abort();
+            }, timeoutMs);
+
+            try {
+                return await fetch(url, {
+                    ...(options || {}),
+                    signal: controller.signal
+                });
+            } finally {
+                clearTimeout(timeoutId);
+            }
+        }
+
+        async function loadMovieData(options) {
+            const opts = options || {};
             const encryptedText = document.getElementById('encryptedInput').value.trim();
             const password = document.getElementById('passwordInput').value;
             const btn = document.getElementById('btnLoad');
+            const reloadBtn = document.getElementById('btn-reload');
 
             try {
                 btn.disabled = true;
-                if (restoreSessionIfAvailable({ requireCurrentKey: true })) {
+                if (reloadBtn) reloadBtn.disabled = true;
+
+                if (!opts.skipLocalCache && restoreSessionIfAvailable({ requireCurrentKey: true })) {
                     return;
                 }
 
-                setStatus('loading', 'Đang giải mã mã chia sẻ...');
+                setStatus('loading', LOAD_DATA_MESSAGE);
+                if (opts.forceRefresh) {
+                    showPlayerLoading(LOAD_DATA_MESSAGE, 0);
+                }
 
                 const myUrl = await resolveProtectedWatchUrl(encryptedText, password);
 
-                setStatus('loading', 'Đang lấy danh sách tập từ server...');
-
-                const apiUrl = buildProtectedWatchRequestUrl(myUrl);
-                const res = await fetch(apiUrl, {
+                const apiUrl = buildProtectedWatchRequestUrl(myUrl, opts.forceRefresh);
+                const res = await fetchWithTimeout(apiUrl, {
                     method: 'GET',
                     headers: getClientDeviceHeaders()
-                });
+                }, CLIENT_FETCH_TIMEOUT_MS);
 
                 let data;
                 try {
                     data = await res.json();
                 } catch (parseError) {
-                    throw new Error('API server trả response không phải JSON (HTTP ' + res.status + ').');
+                    throw new Error(LOAD_DATA_FAILED_MESSAGE);
                 }
 
                 if (!res.ok) {
-                    const message = (data && (data.message || data.error)) || ('API server HTTP ' + res.status);
-                    if (/expir/i.test(message)) {
-                        throw new Error('Link đã hết hạn: ' + message);
-                    }
-                    throw new Error(formatApiErrorMessage(message));
+                    throw new Error(LOAD_DATA_FAILED_MESSAGE);
                 }
 
                 const episodes = normalizeApiData(data);
+                const preserveIndex = Number.isInteger(opts.preserveEpisodeIndex)
+                    ? opts.preserveEpisodeIndex
+                    : 0;
+                const preserveTime = Number(opts.preserveCurrentTime) > 0
+                    ? Number(opts.preserveCurrentTime)
+                    : 0;
+                const nextIndex = Math.min(Math.max(preserveIndex, 0), episodes.length - 1);
+
                 episodesList = episodes;
-                currentEpisodeIndex = 0;
-                saveSessionState({ currentTime: 0, currentEpisodeIndex: 0 });
-                renderEpisodes(episodes);
+                currentEpisodeIndex = nextIndex;
+                saveSessionState({
+                    currentTime: preserveTime,
+                    currentEpisodeIndex: nextIndex
+                });
+                renderEpisodes(episodes, nextIndex, preserveTime);
                 enterPlayerMode();
+                hidePlayerLoading();
             } catch (err) {
-                console.error(err);
-                setStatus('error', err.message || 'Không xử lý được dữ liệu.');
+                hidePlayerLoading();
+                setStatus('error', LOAD_DATA_FAILED_MESSAGE);
             } finally {
                 btn.disabled = false;
+                if (reloadBtn) reloadBtn.disabled = false;
             }
         }
 
@@ -1291,8 +1304,18 @@
         document.getElementById('btnLoad').addEventListener('click', loadMovieData);
         document.getElementById('btn-back').addEventListener('click', exitPlayerMode);
         document.getElementById('btn-reload').addEventListener('click', function() {
-            saveSessionState();
-            window.location.reload();
+            const player = document.getElementById('vidPlayer');
+            const preservedIndex = currentEpisodeIndex;
+            const preservedTime = player && isFinite(player.currentTime) ? player.currentTime : 0;
+
+            clearSessionState();
+
+            loadMovieData({
+                skipLocalCache: true,
+                forceRefresh: true,
+                preserveEpisodeIndex: preservedIndex,
+                preserveCurrentTime: preservedTime
+            });
         });
         document.getElementById('fab-episodes').addEventListener('click', function() {
             togglePopup(true);
