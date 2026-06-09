@@ -557,6 +557,7 @@
         let playerLoadingTimer = null;
         const API_BASE = '/api';
         const SESSION_KEY = 'movieCrawlerPlayerState';
+        const LOCAL_CACHE_KEY = 'movieCrawlerPlayerLocalCache';
 
         function formatTime(seconds) {
             if (!isFinite(seconds) || seconds < 0) return '0:00';
@@ -600,11 +601,19 @@
             el.textContent = '';
         }
 
+        function getCurrentSessionKey() {
+            const encryptedText = document.getElementById('encryptedInput').value.trim();
+            const password = document.getElementById('passwordInput').value;
+
+            return encryptedText + '\n' + password;
+        }
+
         function saveSessionState(extra) {
             if (!episodesList.length) return;
 
             const player = document.getElementById('vidPlayer');
             const state = {
+                cacheKey: getCurrentSessionKey(),
                 episodes: episodesList,
                 currentEpisodeIndex: currentEpisodeIndex,
                 currentTime: player && isFinite(player.currentTime) ? player.currentTime : 0,
@@ -613,13 +622,15 @@
             };
 
             try {
-                sessionStorage.setItem(SESSION_KEY, JSON.stringify(state));
+                const serializedState = JSON.stringify(state);
+                localStorage.setItem(LOCAL_CACHE_KEY, serializedState);
+                sessionStorage.setItem(SESSION_KEY, serializedState);
             } catch (error) {}
         }
 
         function readSessionState() {
             try {
-                const raw = sessionStorage.getItem(SESSION_KEY);
+                const raw = localStorage.getItem(LOCAL_CACHE_KEY) || sessionStorage.getItem(SESSION_KEY);
                 return raw ? JSON.parse(raw) : null;
             } catch (error) {
                 return null;
@@ -628,6 +639,7 @@
 
         function clearSessionState() {
             try {
+                localStorage.removeItem(LOCAL_CACHE_KEY);
                 sessionStorage.removeItem(SESSION_KEY);
             } catch (error) {}
         }
@@ -849,6 +861,10 @@
 
             try {
                 btn.disabled = true;
+                if (restoreSessionIfAvailable({ requireCurrentKey: true })) {
+                    return;
+                }
+
                 setStatus('loading', 'Đang giải mã mã chia sẻ...');
 
                 const myUrl = await resolveProtectedWatchUrl(encryptedText, password);
@@ -879,7 +895,7 @@
                 const episodes = normalizeApiData(data);
                 episodesList = episodes;
                 currentEpisodeIndex = 0;
-                saveSessionState({ currentTime: 0 });
+                saveSessionState({ currentTime: 0, currentEpisodeIndex: 0 });
                 renderEpisodes(episodes);
                 enterPlayerMode();
             } catch (err) {
@@ -1244,9 +1260,13 @@
             el._t = setTimeout(function() { el.style.opacity = '0'; }, 2200);
         }
 
-        function restoreSessionIfAvailable() {
+        function restoreSessionIfAvailable(options) {
             const state = readSessionState();
             if (!state || !Array.isArray(state.episodes) || !state.episodes.length) {
+                return false;
+            }
+
+            if (options && options.requireCurrentKey && state.cacheKey !== getCurrentSessionKey()) {
                 return false;
             }
 
@@ -1312,6 +1332,9 @@
             setupCustomPlayer();
 
             if (hasDataParam) {
+                if (restoreSessionIfAvailable({ requireCurrentKey: true })) {
+                    return;
+                }
                 loadMovieData();
                 return;
             }
