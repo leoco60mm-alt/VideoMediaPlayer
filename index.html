@@ -101,6 +101,28 @@
         .status.loading { background: #1e3a5f; color: #9ecfff; }
         .status.ok { background: #1a3d2a; color: #9effb4; }
         .status.error { background: #3d1a1a; color: #ffb4b4; }
+        .status-loading-content {
+            display: flex;
+            gap: 12px;
+            align-items: flex-start;
+        }
+        .status-loading-content .loading-spinner {
+            width: 24px;
+            height: 24px;
+            flex: 0 0 auto;
+            margin: 1px 0 0;
+            border-width: 3px;
+        }
+        .status-loading-title {
+            font-weight: 700;
+            color: #d7ecff;
+        }
+        .status-loading-note {
+            margin-top: 5px;
+            color: #b8d6f4;
+            font-size: 13px;
+            line-height: 1.45;
+        }
         .hidden-control { display: none !important; }
         .meta {
             display: none;
@@ -592,6 +614,22 @@
         function setStatus(type, message) {
             const el = document.getElementById('status');
             el.className = 'status show ' + type;
+
+            if (type === 'loading') {
+                el.innerHTML = [
+                    '<div class="status-loading-content">',
+                    '  <div class="loading-spinner" aria-hidden="true"></div>',
+                    '  <div>',
+                    '    <div class="status-loading-title"></div>',
+                    '    <div class="status-loading-note"></div>',
+                    '  </div>',
+                    '</div>'
+                ].join('');
+                el.querySelector('.status-loading-title').textContent = message;
+                el.querySelector('.status-loading-note').textContent = LOAD_DATA_NOTE;
+                return;
+            }
+
             el.textContent = message;
         }
 
@@ -768,7 +806,8 @@
 
         const LOAD_DATA_MESSAGE = 'Đang lấy dữ liệu...';
         const LOAD_DATA_FAILED_MESSAGE = 'Lấy dữ liệu thất bại';
-        const CLIENT_FETCH_TIMEOUT_MS = 30000;
+        const LOAD_DATA_NOTE = 'Thời gian lấy dữ liệu có thể mất vài phút tuỳ thuộc vào tốc độ mạng của bạn, Nếu gặp lỗi hãy thử bấm lấy dữ liệu lần nữa.';
+        const CLIENT_FETCH_TIMEOUT_MS = 120000;
 
         function mapWatchServerResponse(data) {
             if (!data || typeof data !== 'object' || data.success === false) {
