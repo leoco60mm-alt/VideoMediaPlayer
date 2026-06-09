@@ -1084,7 +1084,11 @@
                 playNextEpisode(true);
             });
             player.addEventListener('error', function() {
-                // Thêm dòng này: Bỏ qua báo cáo lỗi từ thẻ video nếu HLS.js đang đảm nhận
+                // Bỏ qua lỗi ngắt kết nối chủ động (mã 3) do ta gọi player.load()
+                if (player.error && player.error.code === 3) {
+                    return;
+                }
+
                 if (hlsInstance) {
                     return;
                 }
@@ -1094,7 +1098,8 @@
                 }
                 
                 hidePlayerLoading();
-                showToast('Không phát được video này');
+                // Đổi text để sau này dễ "bắt bệnh"
+                showToast('Lỗi thẻ Video: Không phát được'); 
             });
 
             progressBar.addEventListener('input', function() {
@@ -1195,18 +1200,17 @@
 
             if (hlsInstance) {
                 try {
-                    hlsInstance.stopLoad(); // Chặn tải thêm dữ liệu mạng ngay lập tức
+                    hlsInstance.stopLoad();
                     hlsInstance.detachMedia();
                     hlsInstance.destroy();
                 } catch (error) {}
                 hlsInstance = null;
-                // KHÔNG gọi player.load() ở đây để tránh crash MediaSource của trình duyệt
-            } else {
-                // Chỉ dọn dẹp src và gọi load() nếu trước đó dùng Native Player (mp4)
-                player.removeAttribute('src');
-                player.innerHTML = '';
-                player.load();
             }
+            
+            // CỰC KỲ QUAN TRỌNG TRÊN CHROME:
+            // Ép trình duyệt dọn sạch luồng buffer cũ để nạp luồng mới
+            player.removeAttribute('src');
+            player.load(); 
 
             if (currentSubtitleBlobUrl) {
                 URL.revokeObjectURL(currentSubtitleBlobUrl);
@@ -1260,7 +1264,7 @@
                     return;
                 }
 
-                showToast('Không phát được video này');
+                showToast('Lỗi lệnh Play: Không phát được video này');
             });
         }
 
@@ -1320,17 +1324,15 @@
                         if (data && data.fatal) {
                             switch (data.type) {
                                 case Hls.ErrorTypes.NETWORK_ERROR:
-                                    // Lỗi mạng tạm thời, yêu cầu HLS thử tải lại
                                     hlsInstance.startLoad();
                                     break;
                                 case Hls.ErrorTypes.MEDIA_ERROR:
-                                    // Lỗi luồng media, yêu cầu HLS tự khôi phục
                                     hlsInstance.recoverMediaError();
                                     break;
                                 default:
-                                    // Lỗi không thể cứu vãn, lúc này mới báo lỗi
                                     hidePlayerLoading();
-                                    showToast('Không phát được video này');
+                                    // Đổi text để nhận diện
+                                    showToast('Lỗi luồng HLS: Không phát được video'); 
                                     hlsInstance.destroy();
                                     break;
                             }
