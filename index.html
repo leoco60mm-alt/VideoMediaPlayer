@@ -1043,7 +1043,7 @@
             }
 
             btnPlay.addEventListener('click', function() {
-                if (player.paused) player.play(); else player.pause();
+                if (player.paused) safePlay(player); else player.pause();
             });
             player.addEventListener('play', updatePlayIcon);
             player.addEventListener('pause', updatePlayIcon);
@@ -1114,7 +1114,7 @@
 
             player.addEventListener('click', function(e) {
                 if (e.target === player) {
-                    if (player.paused) player.play(); else player.pause();
+                    if (player.paused) safePlay(player); else player.pause();
                 }
             });
         }
@@ -1199,6 +1199,27 @@
             if (/\.m3u8(\?|$)/i.test(videoUrl)) return 'application/x-mpegURL';
             if (/\.mp4(\?|$)/i.test(videoUrl) || videoUrl.includes('mime_type=video_mp4')) return 'video/mp4';
             return 'video/mp4';
+        }
+
+        function safePlay(player, options) {
+            const playPromise = player.play();
+
+            if (!playPromise || typeof playPromise.catch !== 'function') {
+                return;
+            }
+
+            playPromise.catch(function(error) {
+                hidePlayerLoading();
+
+                if (error && error.name === 'NotAllowedError') {
+                    if (!options || options.showAutoplayToast !== false) {
+                        showToast('Bấm nút phát nếu trình duyệt chặn autoplay');
+                    }
+                    return;
+                }
+
+                showToast('Không phát được video này');
+            });
         }
 
         function attachVideoSource(player, videoUrl) {
@@ -1302,10 +1323,7 @@
             }
 
             player.load();
-            player.play().catch(function() {
-                hidePlayerLoading();
-                showToast('Bấm nút phát nếu trình duyệt chặn autoplay');
-            });
+            safePlay(player);
         }
 
         function showToast(message) {
