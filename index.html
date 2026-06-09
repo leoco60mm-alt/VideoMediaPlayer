@@ -1307,10 +1307,6 @@
         function attachVideoSource(player, videoUrl, token) {
             const type = getVideoType(videoUrl);
             if (type === 'application/x-mpegURL') {
-                if (player.canPlayType('application/vnd.apple.mpegurl')) {
-                    player.src = videoUrl;
-                    return 'native';
-                }
                 if (window.Hls && Hls.isSupported()) {
                     hlsInstance = new Hls();
                     hlsInstance.on(Hls.Events.MANIFEST_LOADING, function() {
@@ -1362,6 +1358,11 @@
                     hlsInstance.attachMedia(player);
                     return 'hls';
                 }
+                if (player.canPlayType('application/vnd.apple.mpegurl')) {
+                    player.src = videoUrl;
+                    return 'native';
+                }
+                
             }
 
             const source = document.createElement('source');
