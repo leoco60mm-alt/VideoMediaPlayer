@@ -578,6 +578,8 @@
         let lastSessionSaveAt = 0;
         let playerLoadingTimer = null;
         let stalledLoadingTimer = null;
+        let playbackToken = 0;
+        let isSwitchingEpisode = false;
         const API_BASE = '/api';
         const SESSION_KEY = 'movieCrawlerPlayerState';
         const LOCAL_CACHE_KEY = 'movieCrawlerPlayerLocalCache';
@@ -1066,7 +1068,6 @@
             player.addEventListener('loadeddata', hidePlayerLoading);
             player.addEventListener('timeupdate', updateTimeUi);
             player.addEventListener('timeupdate', function() {
-                hidePlayerLoading();
                 const now = Date.now();
                 if (now - lastSessionSaveAt > 5000) {
                     lastSessionSaveAt = now;
@@ -1083,6 +1084,9 @@
                 playNextEpisode(true);
             });
             player.addEventListener('error', function() {
+                if (isSwitchingEpisode || !player.error) {
+                    return;
+                }
                 hidePlayerLoading();
                 showToast('Không phát được video này');
             });
@@ -1182,13 +1186,19 @@
             const player = document.getElementById('vidPlayer');
             hidePlayerLoading();
             player.pause();
-            player.removeAttribute('src');
-            player.innerHTML = '';
 
             if (hlsInstance) {
-                hlsInstance.destroy();
+                try {
+                    hlsInstance.detachMedia();
+                    hlsInstance.destroy();
+                } catch (error) {}
                 hlsInstance = null;
             }
+
+            player.removeAttribute('src');
+            player.innerHTML = '';
+            player.load();
+
             if (currentSubtitleBlobUrl) {
                 URL.revokeObjectURL(currentSubtitleBlobUrl);
                 currentSubtitleBlobUrl = null;
@@ -1201,7 +1211,18 @@
             return 'video/mp4';
         }
 
+        function isCurrentPlayback(token) {
+            return token === playbackToken;
+        }
+
         function safePlay(player, options) {
+            const opts = options || {};
+            const token = opts.playbackToken;
+
+            if (token != null && !isCurrentPlayback(token)) {
+                return;
+            }
+
             const playPromise = player.play();
 
             if (!playPromise || typeof playPromise.catch !== 'function') {
@@ -1209,10 +1230,22 @@
             }
 
             playPromise.catch(function(error) {
+                if (token != null && !isCurrentPlayback(token)) {
+                    return;
+                }
+
+                if (isSwitchingEpisode) {
+                    return;
+                }
+
+                if (error && (error.name === 'AbortError' || error.name === 'NotSupportedError')) {
+                    return;
+                }
+
                 hidePlayerLoading();
 
                 if (error && error.name === 'NotAllowedError') {
-                    if (!options || options.showAutoplayToast !== false) {
+                    if (opts.showAutoplayToast !== false) {
                         showToast('Bấm nút phát nếu trình duyệt chặn autoplay');
                     }
                     return;
@@ -1222,7 +1255,28 @@
             });
         }
 
-        function attachVideoSource(player, videoUrl) {
+        function playWhenSourceReady(player, token) {
+            function onReady() {
+                player.removeEventListener('loadedmetadata', onReady);
+                player.removeEventListener('canplay', onReady);
+
+                if (!isCurrentPlayback(token)) {
+                    return;
+                }
+
+                safePlay(player, { playbackToken: token });
+            }
+
+            if (player.readyState >= 1) {
+                safePlay(player, { playbackToken: token });
+                return;
+            }
+
+            player.addEventListener('loadedmetadata', onReady);
+            player.addEventListener('canplay', onReady);
+        }
+
+        function attachVideoSource(player, videoUrl, token) {
             const type = getVideoType(videoUrl);
             if (type === 'application/x-mpegURL') {
                 if (player.canPlayType('application/vnd.apple.mpegurl')) {
@@ -1232,19 +1286,37 @@
                 if (window.Hls && Hls.isSupported()) {
                     hlsInstance = new Hls();
                     hlsInstance.on(Hls.Events.MANIFEST_LOADING, function() {
+                        if (!isCurrentPlayback(token)) {
+                            return;
+                        }
                         showPlayerLoading('Đang tải danh sách phát...');
                     });
                     hlsInstance.on(Hls.Events.MANIFEST_PARSED, function() {
+                        if (!isCurrentPlayback(token)) {
+                            return;
+                        }
                         showPlayerLoading('Đang chuẩn bị phát...', 0);
-                        safePlay(player);
+                        safePlay(player, { playbackToken: token });
                     });
-                    hlsInstance.on(Hls.Events.FRAG_BUFFERED, hidePlayerLoading);
+                    hlsInstance.on(Hls.Events.FRAG_BUFFERED, function() {
+                        if (!isCurrentPlayback(token)) {
+                            return;
+                        }
+                        hidePlayerLoading();
+                    });
                     hlsInstance.on(Hls.Events.ERROR, function(event, data) {
+                        if (!isCurrentPlayback(token)) {
+                            return;
+                        }
                         if (data && data.fatal) {
                             hidePlayerLoading();
+                            showToast('Không phát được video này');
                         }
                     });
                     hlsInstance.on(Hls.Events.MEDIA_ATTACHED, function() {
+                        if (!isCurrentPlayback(token)) {
+                            return;
+                        }
                         hlsInstance.loadSource(videoUrl);
                     });
                     hlsInstance.attachMedia(player);
@@ -1305,31 +1377,52 @@
             const progressBar = document.getElementById('progress-bar');
             const btnPlay = document.getElementById('btn-play');
             const title = document.getElementById('episode-title');
+            const timeDisplay = document.getElementById('time-display');
+            const token = ++playbackToken;
+            isSwitchingEpisode = true;
 
             cleanupCurrentMedia();
             customSub.innerHTML = '';
             customSub.style.display = 'none';
             progressBar.value = 0;
             btnPlay.textContent = '▶';
+            if (timeDisplay) {
+                timeDisplay.textContent = '0:00 / 0:00';
+            }
             title.textContent = ep.name || ('Tập ' + ep.ep);
             showPlayerLoading('Đang tải ' + (ep.name || ('Tập ' + ep.ep)) + '...', 0);
 
-            const sourceMode = attachVideoSource(player, ep.videoUrl);
+            const sourceMode = attachVideoSource(player, ep.videoUrl, token);
             attachSubtitle(player, ep.subtitleUrl);
 
             if (startTime > 0) {
                 player.addEventListener('loadedmetadata', function restoreTimeOnce() {
                     player.removeEventListener('loadedmetadata', restoreTimeOnce);
+                    if (!isCurrentPlayback(token)) {
+                        return;
+                    }
                     if (player.duration && startTime < player.duration - 2) {
                         player.currentTime = startTime;
                     }
                 });
             }
 
-            if (sourceMode !== 'hls') {
-                player.load();
-                safePlay(player);
+            if (sourceMode === 'hls') {
+                requestAnimationFrame(function() {
+                    if (isCurrentPlayback(token)) {
+                        isSwitchingEpisode = false;
+                    }
+                });
+                return;
             }
+
+            player.load();
+            playWhenSourceReady(player, token);
+            requestAnimationFrame(function() {
+                if (isCurrentPlayback(token)) {
+                    isSwitchingEpisode = false;
+                }
+            });
         }
 
         function showToast(message) {
