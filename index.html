@@ -1227,7 +1227,7 @@
             if (type === 'application/x-mpegURL') {
                 if (player.canPlayType('application/vnd.apple.mpegurl')) {
                     player.src = videoUrl;
-                    return;
+                    return 'native';
                 }
                 if (window.Hls && Hls.isSupported()) {
                     hlsInstance = new Hls();
@@ -1236,6 +1236,7 @@
                     });
                     hlsInstance.on(Hls.Events.MANIFEST_PARSED, function() {
                         showPlayerLoading('Đang chuẩn bị phát...', 0);
+                        safePlay(player);
                     });
                     hlsInstance.on(Hls.Events.FRAG_BUFFERED, hidePlayerLoading);
                     hlsInstance.on(Hls.Events.ERROR, function(event, data) {
@@ -1243,9 +1244,11 @@
                             hidePlayerLoading();
                         }
                     });
-                    hlsInstance.loadSource(videoUrl);
+                    hlsInstance.on(Hls.Events.MEDIA_ATTACHED, function() {
+                        hlsInstance.loadSource(videoUrl);
+                    });
                     hlsInstance.attachMedia(player);
-                    return;
+                    return 'hls';
                 }
             }
 
@@ -1253,6 +1256,7 @@
             source.src = videoUrl;
             source.type = type;
             player.appendChild(source);
+            return 'source';
         }
 
         function attachSubtitle(player, subtitleUrl) {
@@ -1310,7 +1314,7 @@
             title.textContent = ep.name || ('Tập ' + ep.ep);
             showPlayerLoading('Đang tải ' + (ep.name || ('Tập ' + ep.ep)) + '...', 0);
 
-            attachVideoSource(player, ep.videoUrl);
+            const sourceMode = attachVideoSource(player, ep.videoUrl);
             attachSubtitle(player, ep.subtitleUrl);
 
             if (startTime > 0) {
@@ -1322,8 +1326,10 @@
                 });
             }
 
-            player.load();
-            safePlay(player);
+            if (sourceMode !== 'hls') {
+                player.load();
+                safePlay(player);
+            }
         }
 
         function showToast(message) {
