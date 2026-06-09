@@ -580,6 +580,8 @@
         let stalledLoadingTimer = null;
         let playbackToken = 0;
         let isSwitchingEpisode = false;
+        let pendingAutoplayToken = null;
+        let playbackWatchdogTimer = null;
         const API_BASE = '/api';
         const SESSION_KEY = 'movieCrawlerPlayerState';
         const LOCAL_CACHE_KEY = 'movieCrawlerPlayerLocalCache';
@@ -614,6 +616,11 @@
             stalledLoadingTimer = null;
             overlay.classList.remove('show');
             overlay.setAttribute('aria-hidden', 'true');
+        }
+
+        function clearPlaybackWatchdog() {
+            clearTimeout(playbackWatchdogTimer);
+            playbackWatchdogTimer = null;
         }
 
         function showStalledLoadingIfNeeded(player) {
@@ -1062,10 +1069,20 @@
                 showPlayerLoading('Đang tua...');
             });
             player.addEventListener('seeked', hidePlayerLoading);
-            player.addEventListener('canplay', hidePlayerLoading);
-            player.addEventListener('canplaythrough', hidePlayerLoading);
-            player.addEventListener('playing', hidePlayerLoading);
-            player.addEventListener('loadeddata', hidePlayerLoading);
+            player.addEventListener('canplay', function() {
+                resumePendingAutoplay(player);
+            });
+            player.addEventListener('canplaythrough', function() {
+                resumePendingAutoplay(player);
+            });
+            player.addEventListener('playing', function() {
+                pendingAutoplayToken = null;
+                clearPlaybackWatchdog();
+                hidePlayerLoading();
+            });
+            player.addEventListener('loadeddata', function() {
+                resumePendingAutoplay(player);
+            });
             player.addEventListener('timeupdate', updateTimeUi);
             player.addEventListener('timeupdate', function() {
                 const now = Date.now();
@@ -1075,7 +1092,9 @@
                 }
             });
             player.addEventListener('loadedmetadata', updateTimeUi);
-            player.addEventListener('loadedmetadata', hidePlayerLoading);
+            player.addEventListener('loadedmetadata', function() {
+                resumePendingAutoplay(player);
+            });
             player.addEventListener('durationchange', updateTimeUi);
             player.addEventListener('ended', function() {
                 hidePlayerLoading();
@@ -1184,6 +1203,8 @@
 
         function cleanupCurrentMedia() {
             const player = document.getElementById('vidPlayer');
+            pendingAutoplayToken = null;
+            clearPlaybackWatchdog();
             hidePlayerLoading();
             player.pause();
 
@@ -1206,8 +1227,25 @@
         }
 
         function getVideoType(videoUrl) {
-            if (/\.m3u8(\?|$)/i.test(videoUrl)) return 'application/x-mpegURL';
-            if (/\.mp4(\?|$)/i.test(videoUrl) || videoUrl.includes('mime_type=video_mp4')) return 'video/mp4';
+            const rawUrl = String(videoUrl || '');
+            let decodedUrl = rawUrl;
+
+            try {
+                decodedUrl = decodeURIComponent(rawUrl);
+            } catch (error) {}
+
+            const normalizedUrl = decodedUrl.toLowerCase();
+
+            if (
+                normalizedUrl.includes('.m3u8') ||
+                normalizedUrl.includes('application/x-mpegurl') ||
+                normalizedUrl.includes('vnd.apple.mpegurl') ||
+                normalizedUrl.includes('mime_type=application_mpegurl')
+            ) {
+                return 'application/x-mpegURL';
+            }
+
+            if (normalizedUrl.includes('.mp4') || normalizedUrl.includes('mime_type=video_mp4')) return 'video/mp4';
             return 'video/mp4';
         }
 
@@ -1229,6 +1267,14 @@
                 return;
             }
 
+            playPromise.then(function() {
+                if (token == null || isCurrentPlayback(token)) {
+                    pendingAutoplayToken = null;
+                    clearPlaybackWatchdog();
+                    hidePlayerLoading();
+                }
+            });
+
             playPromise.catch(function(error) {
                 if (token != null && !isCurrentPlayback(token)) {
                     return;
@@ -1238,7 +1284,17 @@
                     return;
                 }
 
-                if (error && (error.name === 'AbortError' || error.name === 'NotSupportedError')) {
+                if (error && error.name === 'AbortError') {
+                    if (token != null && isCurrentPlayback(token)) {
+                        requestAutoplayWhenReady(player, token);
+                    }
+                    return;
+                }
+
+                if (error && error.name === 'NotSupportedError' && player.readyState === 0) {
+                    if (token != null && isCurrentPlayback(token)) {
+                        requestAutoplayWhenReady(player, token);
+                    }
                     return;
                 }
 
@@ -1255,25 +1311,44 @@
             });
         }
 
-        function playWhenSourceReady(player, token) {
-            function onReady() {
-                player.removeEventListener('loadedmetadata', onReady);
-                player.removeEventListener('canplay', onReady);
-
-                if (!isCurrentPlayback(token)) {
-                    return;
-                }
-
-                safePlay(player, { playbackToken: token });
-            }
-
-            if (player.readyState >= 1) {
-                safePlay(player, { playbackToken: token });
+        function resumePendingAutoplay(player) {
+            if (pendingAutoplayToken == null || !isCurrentPlayback(pendingAutoplayToken)) {
                 return;
             }
 
-            player.addEventListener('loadedmetadata', onReady);
-            player.addEventListener('canplay', onReady);
+            if (!player.paused || player.ended) {
+                pendingAutoplayToken = null;
+                clearPlaybackWatchdog();
+                hidePlayerLoading();
+                return;
+            }
+
+            if (player.readyState >= 1) {
+                safePlay(player, { playbackToken: pendingAutoplayToken });
+            }
+        }
+
+        function requestAutoplayWhenReady(player, token) {
+            if (!isCurrentPlayback(token)) {
+                return;
+            }
+
+            pendingAutoplayToken = token;
+
+            if (player.readyState >= 1) {
+                safePlay(player, { playbackToken: token });
+            }
+
+            clearPlaybackWatchdog();
+            playbackWatchdogTimer = setTimeout(function() {
+                if (!isCurrentPlayback(token) || pendingAutoplayToken !== token) {
+                    return;
+                }
+
+                if (player.paused && player.readyState >= 1) {
+                    safePlay(player, { playbackToken: token });
+                }
+            }, 1200);
         }
 
         function attachVideoSource(player, videoUrl, token) {
@@ -1296,7 +1371,7 @@
                             return;
                         }
                         showPlayerLoading('Đang chuẩn bị phát...', 0);
-                        safePlay(player, { playbackToken: token });
+                        requestAutoplayWhenReady(player, token);
                     });
                     hlsInstance.on(Hls.Events.FRAG_BUFFERED, function() {
                         if (!isCurrentPlayback(token)) {
@@ -1324,11 +1399,8 @@
                 }
             }
 
-            const source = document.createElement('source');
-            source.src = videoUrl;
-            source.type = type;
-            player.appendChild(source);
-            return 'source';
+            player.src = videoUrl;
+            return 'direct';
         }
 
         function attachSubtitle(player, subtitleUrl) {
@@ -1417,7 +1489,7 @@
             }
 
             player.load();
-            playWhenSourceReady(player, token);
+            requestAutoplayWhenReady(player, token);
             requestAnimationFrame(function() {
                 if (isCurrentPlayback(token)) {
                     isSwitchingEpisode = false;
