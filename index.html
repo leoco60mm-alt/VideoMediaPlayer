@@ -538,6 +538,7 @@
         }
         #movie-box.show-player #episode-side-controls { display: flex; }
         #fab-episodes,
+        #fab-history-player,
         #fab-next-ep {
             background-color: rgba(229, 9, 20, 0.45);
             color: #fff;
@@ -547,7 +548,8 @@
             transition: opacity 0.2s ease, background-color 0.2s ease;
             touch-action: manipulation;
         }
-        #fab-episodes {
+        #fab-episodes,
+        #fab-history-player {
             border-radius: 30px 0 0 30px;
             padding: 12px 16px 12px 20px;
             font-size: 15px;
@@ -560,6 +562,7 @@
             line-height: 1;
         }
         #fab-episodes:hover,
+        #fab-history-player:hover,
         #fab-next-ep:hover:not(:disabled) {
             opacity: 0.95;
             background-color: rgba(229, 9, 20, 0.9);
@@ -575,6 +578,7 @@
                 gap: 5px;
             }
             #fab-episodes,
+            #fab-history-player,
             #fab-next-ep {
                 width: 42px;
                 height: 42px;
@@ -739,6 +743,7 @@
 
         <div id="episode-side-controls">
             <button type="button" id="fab-episodes" aria-label="Chọn tập" title="Chọn tập">☰ <span class="fab-text">Chọn Tập</span></button>
+            <button type="button" id="fab-history-player" aria-label="History" title="History">↺ <span class="fab-text">History</span></button>
             <button type="button" id="fab-next-ep" aria-label="Tập tiếp theo" title="Tập tiếp theo">▼</button>
         </div>
 
@@ -1886,11 +1891,8 @@
         }
 
         function requestForceRefresh() {
-            const player = document.getElementById('vidPlayer');
             pendingRefreshRequest = {
-                cacheKey: getCurrentSessionKey(),
-                preservedIndex: currentEpisodeIndex,
-                preservedTime: player && isFinite(player.currentTime) ? player.currentTime : 0
+                cacheKey: getCurrentSessionKey()
             };
             toggleRefreshConfirm(true);
         }
@@ -1906,13 +1908,21 @@
             toggleRefreshConfirm(false);
             removeHistoryItem(request.cacheKey);
             clearSessionState();
+            cleanupCurrentMedia();
+            episodesList = [];
+            currentEpisodeIndex = 0;
+            currentMovieTitle = '';
+            document.body.classList.remove('player-mode');
+            document.getElementById('movie-box').style.display = 'none';
+            document.getElementById('movie-box').classList.remove('show-player');
+            document.getElementById('setup-box').style.display = '';
 
-            loadMovieData({
-                skipLocalCache: true,
-                forceRefresh: true,
-                preserveEpisodeIndex: request.preservedIndex,
-                preserveCurrentTime: request.preservedTime
-            });
+            setTimeout(function() {
+                loadMovieData({
+                    skipLocalCache: true,
+                    forceRefresh: true
+                });
+            }, 0);
         }
 
         document.getElementById('btnLoad').addEventListener('click', loadMovieData);
@@ -1943,6 +1953,10 @@
         });
         document.getElementById('fab-episodes').addEventListener('click', function() {
             togglePopup(true);
+        });
+        document.getElementById('fab-history-player').addEventListener('click', function() {
+            renderHistoryLists();
+            toggleHistoryPopup(true);
         });
         document.getElementById('fab-next-ep').addEventListener('click', function() {
             playNextEpisode(false);
