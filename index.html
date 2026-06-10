@@ -29,6 +29,163 @@
             max-width: 520px;
             margin: 0 auto;
         }
+        #history-panel {
+            position: fixed;
+            top: 24px;
+            right: 16px;
+            bottom: 24px;
+            width: min(340px, 28vw);
+            padding: 16px;
+            border-radius: 16px;
+            background: rgba(26, 29, 36, 0.94);
+            border: 1px solid #2d3442;
+            box-shadow: 0 14px 40px rgba(0,0,0,0.28);
+            display: flex;
+            flex-direction: column;
+            z-index: 25;
+        }
+        .history-title {
+            margin: 0 0 6px;
+            font-size: 16px;
+            font-weight: 800;
+            color: #fff;
+        }
+        .history-note {
+            margin: 0 0 12px;
+            color: #aab4c4;
+            font-size: 12px;
+            line-height: 1.45;
+        }
+        .history-list {
+            overflow-y: auto;
+            display: flex;
+            flex-direction: column;
+            gap: 10px;
+            padding-right: 2px;
+        }
+        .history-empty {
+            color: #8f9bad;
+            font-size: 13px;
+            line-height: 1.5;
+            padding: 12px;
+            border-radius: 12px;
+            background: #151922;
+        }
+        .history-item {
+            border: 1px solid #343b4b;
+            border-radius: 12px;
+            background: #202532;
+            color: #fff;
+            padding: 11px 12px;
+            cursor: pointer;
+            text-align: left;
+        }
+        .history-item:hover {
+            border-color: #e50914;
+            background: #262c3a;
+        }
+        .history-item-title {
+            font-size: 14px;
+            font-weight: 800;
+            line-height: 1.35;
+            overflow: hidden;
+            text-overflow: ellipsis;
+            white-space: nowrap;
+        }
+        .history-item-meta {
+            margin-top: 5px;
+            color: #aeb8c8;
+            font-size: 12px;
+        }
+        #btn-history {
+            display: none;
+            position: fixed;
+            right: 0;
+            top: 48%;
+            transform: translateY(-50%);
+            z-index: 70;
+            border: none;
+            border-radius: 24px 0 0 24px;
+            padding: 12px 10px 12px 14px;
+            background: rgba(229, 9, 20, 0.88);
+            color: #fff;
+            font-weight: 800;
+            cursor: pointer;
+            writing-mode: vertical-rl;
+            text-orientation: mixed;
+        }
+        body.player-mode #btn-history {
+            display: none !important;
+        }
+        #history-overlay,
+        #confirm-overlay {
+            position: fixed;
+            inset: 0;
+            z-index: 180;
+            display: none;
+            align-items: flex-end;
+            justify-content: center;
+            background: rgba(0,0,0,0.72);
+            backdrop-filter: blur(5px);
+        }
+        #history-overlay.show,
+        #confirm-overlay.show {
+            display: flex;
+        }
+        .history-popup,
+        .confirm-card {
+            width: 100%;
+            max-height: 78vh;
+            background: #1c1f29;
+            border: 1px solid #333b4d;
+            border-radius: 20px 20px 0 0;
+            padding: 18px;
+            box-shadow: 0 -12px 38px rgba(0,0,0,0.38);
+        }
+        .history-popup .history-list {
+            max-height: calc(78vh - 96px);
+        }
+        .confirm-card {
+            max-width: 420px;
+            margin: auto 16px;
+            border-radius: 18px;
+            align-self: center;
+        }
+        .confirm-title {
+            margin: 0 0 8px;
+            font-size: 18px;
+            font-weight: 800;
+        }
+        .confirm-message {
+            margin: 0;
+            color: #c5cede;
+            font-size: 14px;
+            line-height: 1.55;
+        }
+        .confirm-actions {
+            display: flex;
+            gap: 10px;
+            margin-top: 18px;
+        }
+        .confirm-actions button {
+            flex: 1;
+            border: none;
+            border-radius: 10px;
+            padding: 12px 14px;
+            color: #fff;
+            font-weight: 800;
+            cursor: pointer;
+        }
+        #confirm-cancel { background: #303746; }
+        #confirm-ok { background: #e50914; }
+        @media (max-width: 1120px) {
+            #history-panel {
+                display: none;
+            }
+            #btn-history {
+                display: block;
+            }
+        }
         h1 {
             margin: 0 0 8px;
             font-size: 1.45rem;
@@ -523,12 +680,40 @@
 
             <div id="status" class="status"></div>
         </div>
+        <aside id="history-panel" aria-label="Lịch sử phim đã lưu">
+            <h2 class="history-title">Phim đã lưu</h2>
+            <p class="history-note">Chọn phim đã lấy dữ liệu trước đó để xem lại nhanh.</p>
+            <div class="history-list" id="historyListDesktop"></div>
+        </aside>
+    </div>
+
+    <button type="button" id="btn-history">History</button>
+
+    <div id="history-overlay" aria-hidden="true">
+        <div class="history-popup">
+            <div class="popup-header">
+                <h3>Phim đã lưu</h3>
+                <button type="button" class="close-btn" id="history-close">&times;</button>
+            </div>
+            <div class="history-list" id="historyListPopup"></div>
+        </div>
+    </div>
+
+    <div id="confirm-overlay" aria-hidden="true">
+        <div class="confirm-card">
+            <h3 class="confirm-title">Lấy dữ liệu mới nhất?</h3>
+            <p class="confirm-message">Dữ liệu cũ sẽ được xoá đi để lấy mới dữ liệu. Bạn chắc chứ?</p>
+            <div class="confirm-actions">
+                <button type="button" id="confirm-cancel">Huỷ</button>
+                <button type="button" id="confirm-ok">Đồng ý</button>
+            </div>
+        </div>
     </div>
 
     <div id="movie-box">
         <div id="top-actions">
             <button type="button" id="btn-back">← Nhập mã khác</button>
-            <button type="button" id="btn-reload">Tải lại</button>
+            <button type="button" id="btn-reload">Lấy dữ liệu mới nhất</button>
         </div>
 
         <div id="player-shell">
@@ -575,14 +760,18 @@
         let isSeeking = false;
         let episodesList = [];
         let currentEpisodeIndex = 0;
+        let currentMovieTitle = '';
         let lastSessionSaveAt = 0;
         let playerLoadingTimer = null;
         let stalledLoadingTimer = null;
         let playbackToken = 0;
         let isSwitchingEpisode = false;
+        let pendingRefreshRequest = null;
         const API_BASE = '/api';
         const SESSION_KEY = 'movieCrawlerPlayerState';
         const LOCAL_CACHE_KEY = 'movieCrawlerPlayerLocalCache';
+        const HISTORY_CACHE_KEY = 'movieCrawlerPlayerHistoryCache';
+        const MAX_HISTORY_ITEMS = 10;
 
         function formatTime(seconds) {
             if (!isFinite(seconds) || seconds < 0) return '0:00';
@@ -665,12 +854,72 @@
             return encryptedText + '\n' + password;
         }
 
+        function getCurrentInputState() {
+            return {
+                encryptedText: document.getElementById('encryptedInput').value.trim(),
+                password: document.getElementById('passwordInput').value
+            };
+        }
+
+        function readHistoryState() {
+            try {
+                const raw = localStorage.getItem(HISTORY_CACHE_KEY);
+                const parsed = raw ? JSON.parse(raw) : [];
+
+                if (Array.isArray(parsed)) {
+                    return parsed.filter(function(item) {
+                        return item && item.cacheKey && Array.isArray(item.episodes) && item.episodes.length;
+                    });
+                }
+            } catch (error) {}
+
+            try {
+                const legacyRaw = localStorage.getItem(LOCAL_CACHE_KEY);
+                const legacy = legacyRaw ? JSON.parse(legacyRaw) : null;
+
+                if (legacy && legacy.cacheKey && Array.isArray(legacy.episodes) && legacy.episodes.length) {
+                    return [legacy];
+                }
+            } catch (error) {}
+
+            return [];
+        }
+
+        function writeHistoryState(items) {
+            try {
+                localStorage.setItem(HISTORY_CACHE_KEY, JSON.stringify(items.slice(0, MAX_HISTORY_ITEMS)));
+                localStorage.removeItem(LOCAL_CACHE_KEY);
+            } catch (error) {}
+        }
+
+        function getHistoryTitle(state) {
+            if (state.movieTitle) return state.movieTitle;
+            if (state.title) return state.title;
+            if (state.protectedPayload && state.protectedPayload.Title) return state.protectedPayload.Title;
+            if (state.episodes && state.episodes[0]) return state.episodes[0].name || ('Tập ' + state.episodes[0].ep);
+            return 'Phim đã lưu';
+        }
+
+        function getHistoryMeta(state) {
+            const count = Array.isArray(state.episodes) ? state.episodes.length : 0;
+            const savedAt = state.savedAt ? new Date(state.savedAt) : null;
+            const timeText = savedAt && !Number.isNaN(savedAt.getTime())
+                ? savedAt.toLocaleString('vi-VN')
+                : '';
+
+            return count + ' tập' + (timeText ? ' • ' + timeText : '');
+        }
+
         function saveSessionState(extra) {
             if (!episodesList.length) return;
 
             const player = document.getElementById('vidPlayer');
+            const inputState = getCurrentInputState();
             const state = {
                 cacheKey: getCurrentSessionKey(),
+                encryptedText: inputState.encryptedText,
+                password: inputState.password,
+                movieTitle: currentMovieTitle || '',
                 episodes: episodesList,
                 currentEpisodeIndex: currentEpisodeIndex,
                 currentTime: player && isFinite(player.currentTime) ? player.currentTime : 0,
@@ -680,14 +929,46 @@
 
             try {
                 const serializedState = JSON.stringify(state);
-                localStorage.setItem(LOCAL_CACHE_KEY, serializedState);
                 sessionStorage.setItem(SESSION_KEY, serializedState);
+                upsertHistoryState(state);
             } catch (error) {}
+        }
+
+        function upsertHistoryState(state) {
+            const history = readHistoryState();
+            const nextHistory = [
+                state,
+                ...history.filter(function(item) {
+                    return item.cacheKey !== state.cacheKey;
+                })
+            ].slice(0, MAX_HISTORY_ITEMS);
+
+            writeHistoryState(nextHistory);
+            renderHistoryLists();
         }
 
         function readSessionState() {
             try {
-                const raw = localStorage.getItem(LOCAL_CACHE_KEY) || sessionStorage.getItem(SESSION_KEY);
+                const raw = sessionStorage.getItem(SESSION_KEY);
+                if (raw) return JSON.parse(raw);
+            } catch (error) {}
+
+            try {
+                const history = readHistoryState();
+                const currentKey = getCurrentSessionKey();
+                const matched = history.find(function(item) {
+                    return item.cacheKey === currentKey;
+                });
+
+                if (matched) {
+                    return matched;
+                }
+
+                if (history.length) {
+                    return history[0];
+                }
+
+                const raw = localStorage.getItem(LOCAL_CACHE_KEY);
                 return raw ? JSON.parse(raw) : null;
             } catch (error) {
                 return null;
@@ -696,9 +977,85 @@
 
         function clearSessionState() {
             try {
-                localStorage.removeItem(LOCAL_CACHE_KEY);
                 sessionStorage.removeItem(SESSION_KEY);
             } catch (error) {}
+        }
+
+        function removeHistoryItem(cacheKey) {
+            const nextHistory = readHistoryState().filter(function(item) {
+                return item.cacheKey !== cacheKey;
+            });
+
+            writeHistoryState(nextHistory);
+            renderHistoryLists();
+        }
+
+        function renderHistoryLists() {
+            const history = readHistoryState();
+            const containers = [
+                document.getElementById('historyListDesktop'),
+                document.getElementById('historyListPopup')
+            ].filter(Boolean);
+
+            containers.forEach(function(container) {
+                container.innerHTML = '';
+
+                if (!history.length) {
+                    const empty = document.createElement('div');
+                    empty.className = 'history-empty';
+                    empty.textContent = 'Chưa có phim nào được lưu. Sau khi lấy dữ liệu thành công, phim sẽ xuất hiện ở đây.';
+                    container.appendChild(empty);
+                    return;
+                }
+
+                history.forEach(function(item) {
+                    const btn = document.createElement('button');
+                    btn.type = 'button';
+                    btn.className = 'history-item';
+                    btn.innerHTML = [
+                        '<div class="history-item-title"></div>',
+                        '<div class="history-item-meta"></div>'
+                    ].join('');
+                    btn.querySelector('.history-item-title').textContent = getHistoryTitle(item);
+                    btn.querySelector('.history-item-meta').textContent = getHistoryMeta(item);
+                    btn.addEventListener('click', function() {
+                        selectHistoryItem(item.cacheKey);
+                    });
+                    container.appendChild(btn);
+                });
+            });
+        }
+
+        function toggleHistoryPopup(show) {
+            const overlay = document.getElementById('history-overlay');
+            if (!overlay) return;
+
+            overlay.classList.toggle('show', Boolean(show));
+            overlay.setAttribute('aria-hidden', show ? 'false' : 'true');
+        }
+
+        function selectHistoryItem(cacheKey) {
+            const item = readHistoryState().find(function(entry) {
+                return entry.cacheKey === cacheKey;
+            });
+
+            if (!item) {
+                renderHistoryLists();
+                return;
+            }
+
+            const encryptedInput = document.getElementById('encryptedInput');
+            const passwordInput = document.getElementById('passwordInput');
+            if (encryptedInput && item.encryptedText) encryptedInput.value = item.encryptedText;
+            if (passwordInput && item.password != null) passwordInput.value = item.password;
+
+            try {
+                sessionStorage.setItem(SESSION_KEY, JSON.stringify(item));
+            } catch (error) {}
+
+            currentMovieTitle = getHistoryTitle(item);
+            toggleHistoryPopup(false);
+            restoreSessionIfAvailable({ requireCurrentKey: true });
         }
 
         function base64UrlToBytes(value) {
@@ -951,6 +1308,11 @@
                 }
 
                 const episodes = normalizeApiData(data);
+                currentMovieTitle = (data.protectedPayload && (data.protectedPayload.Title || data.protectedPayload.title)) ||
+                    data.title ||
+                    data.name ||
+                    currentMovieTitle ||
+                    'Phim đã lưu';
                 const preserveIndex = Number.isInteger(opts.preserveEpisodeIndex)
                     ? opts.preserveEpisodeIndex
                     : 0;
@@ -991,11 +1353,13 @@
             clearSessionState();
             episodesList = [];
             currentEpisodeIndex = 0;
+            currentMovieTitle = '';
             document.body.classList.remove('player-mode');
             document.getElementById('movie-box').style.display = 'none';
             document.getElementById('movie-box').classList.remove('show-player');
             document.getElementById('setup-box').style.display = '';
             hideStatus();
+            renderHistoryLists();
         }
 
         function setupCustomPlayer() {
@@ -1503,26 +1867,79 @@
                 : 0;
             const time = Number(state.currentTime) > 0 ? Number(state.currentTime) : 0;
 
+            const encryptedInput = document.getElementById('encryptedInput');
+            const passwordInput = document.getElementById('passwordInput');
+            if (encryptedInput && state.encryptedText) encryptedInput.value = state.encryptedText;
+            if (passwordInput && state.password != null) passwordInput.value = state.password;
+            currentMovieTitle = getHistoryTitle(state);
             renderEpisodes(episodes, index, time);
             enterPlayerMode();
             return true;
         }
 
-        document.getElementById('btnLoad').addEventListener('click', loadMovieData);
-        document.getElementById('btn-back').addEventListener('click', exitPlayerMode);
-        document.getElementById('btn-reload').addEventListener('click', function() {
-            const player = document.getElementById('vidPlayer');
-            const preservedIndex = currentEpisodeIndex;
-            const preservedTime = player && isFinite(player.currentTime) ? player.currentTime : 0;
+        function toggleRefreshConfirm(show) {
+            const overlay = document.getElementById('confirm-overlay');
+            if (!overlay) return;
 
+            overlay.classList.toggle('show', Boolean(show));
+            overlay.setAttribute('aria-hidden', show ? 'false' : 'true');
+        }
+
+        function requestForceRefresh() {
+            const player = document.getElementById('vidPlayer');
+            pendingRefreshRequest = {
+                cacheKey: getCurrentSessionKey(),
+                preservedIndex: currentEpisodeIndex,
+                preservedTime: player && isFinite(player.currentTime) ? player.currentTime : 0
+            };
+            toggleRefreshConfirm(true);
+        }
+
+        function confirmForceRefresh() {
+            if (!pendingRefreshRequest) {
+                toggleRefreshConfirm(false);
+                return;
+            }
+
+            const request = pendingRefreshRequest;
+            pendingRefreshRequest = null;
+            toggleRefreshConfirm(false);
+            removeHistoryItem(request.cacheKey);
             clearSessionState();
 
             loadMovieData({
                 skipLocalCache: true,
                 forceRefresh: true,
-                preserveEpisodeIndex: preservedIndex,
-                preserveCurrentTime: preservedTime
+                preserveEpisodeIndex: request.preservedIndex,
+                preserveCurrentTime: request.preservedTime
             });
+        }
+
+        document.getElementById('btnLoad').addEventListener('click', loadMovieData);
+        document.getElementById('btn-back').addEventListener('click', exitPlayerMode);
+        document.getElementById('btn-reload').addEventListener('click', requestForceRefresh);
+        document.getElementById('confirm-cancel').addEventListener('click', function() {
+            pendingRefreshRequest = null;
+            toggleRefreshConfirm(false);
+        });
+        document.getElementById('confirm-ok').addEventListener('click', confirmForceRefresh);
+        document.getElementById('confirm-overlay').addEventListener('click', function(e) {
+            if (e.target === e.currentTarget) {
+                pendingRefreshRequest = null;
+                toggleRefreshConfirm(false);
+            }
+        });
+        document.getElementById('btn-history').addEventListener('click', function() {
+            renderHistoryLists();
+            toggleHistoryPopup(true);
+        });
+        document.getElementById('history-close').addEventListener('click', function() {
+            toggleHistoryPopup(false);
+        });
+        document.getElementById('history-overlay').addEventListener('click', function(e) {
+            if (e.target === e.currentTarget) {
+                toggleHistoryPopup(false);
+            }
         });
         document.getElementById('fab-episodes').addEventListener('click', function() {
             togglePopup(true);
@@ -1560,6 +1977,7 @@
             const hasDataParam = hydrateInputFromUrlParams();
 
             setupCustomPlayer();
+            renderHistoryLists();
 
             if (hasDataParam) {
                 if (restoreSessionIfAvailable({ requireCurrentKey: true })) {
