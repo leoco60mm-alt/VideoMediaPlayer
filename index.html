@@ -1060,7 +1060,20 @@
 
             currentMovieTitle = getHistoryTitle(item);
             toggleHistoryPopup(false);
-            restoreSessionIfAvailable({ requireCurrentKey: true });
+
+            const episodes = item.episodes
+                .map(normalizeEpisode)
+                .filter(ep => ep.videoUrl);
+
+            episodesList = episodes;
+
+            renderEpisodes(
+                episodes,
+                item.currentEpisodeIndex || 0,
+                item.currentTime || 0
+            );
+
+            enterPlayerMode();
         }
 
         function base64UrlToBytes(value) {
@@ -1572,6 +1585,7 @@
         }
 
         function cleanupCurrentMedia() {
+            playbackToken++;
             const player = document.getElementById('vidPlayer');
             hidePlayerLoading();
             player.pause();
