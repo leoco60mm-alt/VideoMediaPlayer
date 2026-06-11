@@ -1862,16 +1862,19 @@
         }
 
         function playVideo(ep, startTime) {
-            const player = document.getElementById('vidPlayer');
+                        const player = document.getElementById('vidPlayer');
             const customSub = document.getElementById('custom-sub');
             const progressBar = document.getElementById('progress-bar');
             const btnPlay = document.getElementById('btn-play');
             const title = document.getElementById('episode-title');
             const timeDisplay = document.getElementById('time-display');
-            const token = ++playbackToken;
+            
             isSwitchingEpisode = true;
-
-            cleanupCurrentMedia();
+        
+            cleanupCurrentMedia(); // Dọn dẹp player cũ trước
+        
+            // ✅ Lấy đúng token sau khi đã dọn dẹp xong
+            const token = playbackToken; 
             customSub.innerHTML = '';
             customSub.style.display = 'none';
             progressBar.value = 0;
