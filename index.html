@@ -772,6 +772,8 @@
         let playbackToken = 0;
         let isSwitchingEpisode = false;
         let pendingRefreshRequest = null;
+        let hlsProxyBaseUrl = '';
+        let currentSourceType = '';
         const API_BASE = '/api';
         const SESSION_KEY = 'movieCrawlerPlayerState';
         const LOCAL_CACHE_KEY = 'movieCrawlerPlayerLocalCache';
@@ -925,6 +927,7 @@
                 encryptedText: inputState.encryptedText,
                 password: inputState.password,
                 movieTitle: currentMovieTitle || '',
+                sourceType: currentSourceType || '',
                 episodes: episodesList,
                 currentEpisodeIndex: currentEpisodeIndex,
                 currentTime: player && isFinite(player.currentTime) ? player.currentTime : 0,
@@ -1326,6 +1329,7 @@
                 }
 
                 const episodes = normalizeApiData(data);
+                currentSourceType = data.type || '';
                 currentMovieTitle = (data.protectedPayload && (data.protectedPayload.Title || data.protectedPayload.title)) ||
                     data.title ||
                     data.name ||
@@ -1372,6 +1376,7 @@
             episodesList = [];
             currentEpisodeIndex = 0;
             currentMovieTitle = '';
+            currentSourceType = '';
             document.body.classList.remove('player-mode');
             document.getElementById('movie-box').style.display = 'none';
             document.getElementById('movie-box').classList.remove('show-player');
@@ -1585,6 +1590,7 @@
         }
 
         function cleanupCurrentMedia() {
+            playbackToken++;
             const player = document.getElementById('vidPlayer');
             hidePlayerLoading();
             player.pause();
@@ -1613,6 +1619,66 @@
                 URL.revokeObjectURL(currentSubtitleBlobUrl);
                 currentSubtitleBlobUrl = null;
             }
+        }
+
+        function isDramafrenProxyUrl(url) {
+            if (!url) return false;
+
+            try {
+                const parsedUrl = new URL(url);
+                return parsedUrl.hostname.toLowerCase().endsWith('.dramafren.org') &&
+                    parsedUrl.pathname.includes('/proxy') &&
+                    parsedUrl.searchParams.has('url');
+            } catch (error) {
+                return false;
+            }
+        }
+
+        function unwrapDramafrenProxyUrl(url) {
+            if (!isDramafrenProxyUrl(url)) {
+                return url;
+            }
+
+            try {
+                return new URL(url).searchParams.get('url') || url;
+            } catch (error) {
+                return url;
+            }
+        }
+
+        function needsHlsProxy(url, sourceType) {
+            const originUrl = unwrapDramafrenProxyUrl(url);
+            if (!originUrl) return false;
+            if (sourceType === 'shortmax') return true;
+            return /\.m3u8(\?|$)/i.test(originUrl) && /shorttv\.live/i.test(originUrl);
+        }
+
+        function resolvePlaybackUrl(videoUrl, sourceType) {
+            if (!videoUrl) {
+                return '';
+            }
+
+            const originUrl = unwrapDramafrenProxyUrl(videoUrl);
+            if (!needsHlsProxy(originUrl, sourceType)) {
+                return originUrl;
+            }
+
+            if (!hlsProxyBaseUrl) {
+                showToast('Chưa cấu hình HLS proxy');
+                return null;
+            }
+
+            return hlsProxyBaseUrl + encodeURIComponent(originUrl);
+        }
+
+        async function loadClientConfig() {
+            try {
+                const res = await fetch(API_BASE.replace(/\/+$/, '') + '/config');
+                const data = await res.json();
+                if (data && data.success) {
+                    hlsProxyBaseUrl = data.hlsProxyBaseUrl || '';
+                }
+            } catch (error) {}
         }
 
         function getVideoType(videoUrl) {
@@ -1815,7 +1881,14 @@
             title.textContent = ep.name || ('Tập ' + ep.ep);
             showPlayerLoading('Đang tải ' + (ep.name || ('Tập ' + ep.ep)) + '...', 0);
 
-            const sourceMode = attachVideoSource(player, ep.videoUrl, token);
+            const playbackUrl = resolvePlaybackUrl(ep.videoUrl, currentSourceType);
+            if (!playbackUrl) {
+                hidePlayerLoading();
+                isSwitchingEpisode = false;
+                return;
+            }
+
+            const sourceMode = attachVideoSource(player, playbackUrl, token);
             attachSubtitle(player, ep.subtitleUrl);
 
             if (startTime > 0) {
@@ -1890,6 +1963,7 @@
             if (encryptedInput && state.encryptedText) encryptedInput.value = state.encryptedText;
             if (passwordInput && state.password != null) passwordInput.value = state.password;
             currentMovieTitle = getHistoryTitle(state);
+            currentSourceType = state.sourceType || '';
             renderEpisodes(episodes, index, time);
             enterPlayerMode();
             return true;
@@ -2000,7 +2074,9 @@
             return true;
         }
 
-        window.addEventListener('DOMContentLoaded', function() {
+        window.addEventListener('DOMContentLoaded', async function() {
+            await loadClientConfig();
+
             const hasDataParam = hydrateInputFromUrlParams();
 
             setupCustomPlayer();
