@@ -1646,10 +1646,11 @@
             }
         }
 
-        function needsHlsProxy(url, sourceType) {
+        function needsMediaProxy(url, sourceType) {
             const originUrl = unwrapDramafrenProxyUrl(url);
             if (!originUrl) return false;
-            if (sourceType === 'shortmax') return true;
+            if (sourceType === 'shortmax' || sourceType === 'dramawave') return true;
+            if (/mydramawave\.com/i.test(originUrl)) return true;
             return /\.m3u8(\?|$)/i.test(originUrl) && /shorttv\.live/i.test(originUrl);
         }
 
@@ -1659,12 +1660,12 @@
             }
 
             const originUrl = unwrapDramafrenProxyUrl(videoUrl);
-            if (!needsHlsProxy(originUrl, sourceType)) {
+            if (!needsMediaProxy(originUrl, sourceType)) {
                 return originUrl;
             }
 
             if (!hlsProxyBaseUrl) {
-                showToast('Chưa cấu hình HLS proxy');
+                showToast('Chưa cấu hình media proxy');
                 return null;
             }
 
