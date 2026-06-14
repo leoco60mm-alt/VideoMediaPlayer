@@ -759,7 +759,10 @@
     </div>
 
     <script>
-        let currentSubtitleBlobUrl = null;
+        let subtitleCues = [];
+        let subtitleSyncToken = 0;
+        let subtitleTimeUpdateHandler = null;
+        let subtitleSeekedHandler = null;
         let hlsInstance = null;
         let playerUiBound = false;
         let isSeeking = false;
@@ -1202,9 +1205,12 @@
         }
 
         const LOAD_DATA_MESSAGE = 'Đang lấy dữ liệu...';
+        const REFRESH_DATA_MESSAGE = 'Đang kiểm tra / refresh dữ liệu phim...';
         const LOAD_DATA_FAILED_MESSAGE = 'Lấy dữ liệu thất bại';
         const LOAD_DATA_NOTE = 'Thời gian lấy dữ liệu có thể mất vài phút tuỳ thuộc vào tốc độ mạng của bạn, Nếu gặp lỗi hãy thử bấm lấy dữ liệu lần nữa.';
-        const CLIENT_FETCH_TIMEOUT_MS = 120000;
+        const CLIENT_FETCH_TIMEOUT_MS = 900000;
+        const REFRESH_POLL_INTERVAL_MS = 4000;
+        const REFRESH_POLL_MAX_MS = 900000;
 
         function mapWatchServerResponse(data) {
             if (!data || typeof data !== 'object' || data.success === false) {
@@ -1289,6 +1295,51 @@
             }
         }
 
+        function sleep(ms) {
+            return new Promise(function(resolve) {
+                setTimeout(resolve, ms);
+            });
+        }
+
+        async function fetchWatchDataWithRetry(apiUrl) {
+            const startedAt = Date.now();
+
+            while (true) {
+                const res = await fetchWithTimeout(apiUrl, {
+                    method: 'GET',
+                    headers: getClientDeviceHeaders()
+                }, CLIENT_FETCH_TIMEOUT_MS);
+
+                let data;
+                try {
+                    data = await res.json();
+                } catch (parseError) {
+                    throw new Error(LOAD_DATA_FAILED_MESSAGE);
+                }
+
+                if (res.ok) {
+                    return data;
+                }
+
+                if (
+                    res.status === 202 &&
+                    data &&
+                    (data.errorCode === 'DATA_REFRESHING' || data.errorCode === 'DATA_PENDING')
+                ) {
+                    if (Date.now() - startedAt > REFRESH_POLL_MAX_MS) {
+                        throw new Error(LOAD_DATA_FAILED_MESSAGE);
+                    }
+
+                    setStatus('loading', REFRESH_DATA_MESSAGE);
+                    showPlayerLoading(REFRESH_DATA_MESSAGE, 0);
+                    await sleep(REFRESH_POLL_INTERVAL_MS);
+                    continue;
+                }
+
+                throw new Error(LOAD_DATA_FAILED_MESSAGE);
+            }
+        }
+
         async function loadMovieData(options) {
             const opts = options || {};
             const encryptedText = document.getElementById('encryptedInput').value.trim();
@@ -1312,21 +1363,7 @@
                 const myUrl = await resolveProtectedWatchUrl(encryptedText, password);
 
                 const apiUrl = buildProtectedWatchRequestUrl(myUrl, opts.forceRefresh);
-                const res = await fetchWithTimeout(apiUrl, {
-                    method: 'GET',
-                    headers: getClientDeviceHeaders()
-                }, CLIENT_FETCH_TIMEOUT_MS);
-
-                let data;
-                try {
-                    data = await res.json();
-                } catch (parseError) {
-                    throw new Error(LOAD_DATA_FAILED_MESSAGE);
-                }
-
-                if (!res.ok) {
-                    throw new Error(LOAD_DATA_FAILED_MESSAGE);
-                }
+                const data = await fetchWatchDataWithRetry(apiUrl);
 
                 const episodes = normalizeApiData(data);
                 currentSourceType = data.type || '';
@@ -1615,10 +1652,206 @@
                 player.load(); 
             }
 
-            if (currentSubtitleBlobUrl) {
-                URL.revokeObjectURL(currentSubtitleBlobUrl);
-                currentSubtitleBlobUrl = null;
+            cleanupSubtitleSession();
+        }
+
+        function decodeBase64ToUtf8(base64Text) {
+            const binaryStr = atob(base64Text);
+            const bytes = new Uint8Array(binaryStr.length);
+            for (let i = 0; i < binaryStr.length; i++) {
+                bytes[i] = binaryStr.charCodeAt(i);
             }
+            return new TextDecoder('utf-8').decode(bytes);
+        }
+
+        function decodeSubtitleToVtt(subtitleUrl) {
+            if (!subtitleUrl) {
+                return null;
+            }
+
+            const raw = String(subtitleUrl).trim();
+            if (!raw) {
+                return null;
+            }
+
+            if (/^WEBVTT/i.test(raw) || raw.includes('-->')) {
+                return raw;
+            }
+
+            try {
+                const decoded = decodeBase64ToUtf8(raw);
+                if (decoded && (/^WEBVTT/i.test(decoded.trim()) || decoded.includes('-->'))) {
+                    return decoded;
+                }
+            } catch (error) {}
+
+            return null;
+        }
+
+        function parseVttTimestamp(value) {
+            const parts = String(value || '').trim().split(':');
+
+            if (parts.length === 3) {
+                return Number(parts[0]) * 3600 + Number(parts[1]) * 60 + parseFloat(parts[2]);
+            }
+
+            if (parts.length === 2) {
+                return Number(parts[0]) * 60 + parseFloat(parts[1]);
+            }
+
+            return parseFloat(parts[0]) || 0;
+        }
+
+        function stripVttTags(text) {
+            return String(text || '')
+                .replace(/<[^>]+>/g, '')
+                .replace(/&nbsp;/gi, ' ')
+                .replace(/&amp;/g, '&')
+                .replace(/&lt;/g, '<')
+                .replace(/&gt;/g, '>')
+                .trim();
+        }
+
+        function parseVttToCues(vttText) {
+            if (!vttText) {
+                return [];
+            }
+
+            const normalized = String(vttText).replace(/\uFEFF/g, '').replace(/\r/g, '');
+            if (!/^WEBVTT/i.test(normalized.trim())) {
+                return [];
+            }
+
+            const blocks = normalized.split(/\n\n+/);
+            const cues = [];
+
+            blocks.forEach(function(block) {
+                const lines = block.split('\n').map(function(line) {
+                    return line.trim();
+                }).filter(Boolean);
+
+                if (!lines.length) {
+                    return;
+                }
+
+                let timingIndex = 0;
+                if (!lines[0].includes('-->') && lines.length > 1) {
+                    timingIndex = 1;
+                }
+
+                const timingLine = lines[timingIndex];
+                if (!timingLine || !timingLine.includes('-->')) {
+                    return;
+                }
+
+                const timingParts = timingLine.split('-->');
+                const start = parseVttTimestamp(timingParts[0]);
+                const end = parseVttTimestamp(String(timingParts[1] || '').trim().split(/\s+/)[0]);
+                const text = stripVttTags(lines.slice(timingIndex + 1).join('\n'));
+
+                if (text && end > start) {
+                    cues.push({ start: start, end: end, text: text });
+                }
+            });
+
+            return cues.sort(function(left, right) {
+                return left.start - right.start;
+            });
+        }
+
+        function clearSubtitleSyncListeners() {
+            const player = document.getElementById('vidPlayer');
+
+            if (player && subtitleTimeUpdateHandler) {
+                player.removeEventListener('timeupdate', subtitleTimeUpdateHandler);
+            }
+
+            if (player && subtitleSeekedHandler) {
+                player.removeEventListener('seeked', subtitleSeekedHandler);
+            }
+
+            subtitleTimeUpdateHandler = null;
+            subtitleSeekedHandler = null;
+        }
+
+        function cleanupSubtitleSession() {
+            clearSubtitleSyncListeners();
+            subtitleCues = [];
+            subtitleSyncToken++;
+        }
+
+        function renderSubtitleAtTime(currentTime, token) {
+            const customSub = document.getElementById('custom-sub');
+            if (!customSub || token !== subtitleSyncToken) {
+                return;
+            }
+
+            if (!subtitleCues.length) {
+                customSub.innerHTML = '';
+                customSub.style.display = 'none';
+                return;
+            }
+
+            let activeCue = null;
+            for (let i = 0; i < subtitleCues.length; i++) {
+                const cue = subtitleCues[i];
+                if (currentTime >= cue.start && currentTime < cue.end) {
+                    activeCue = cue;
+                    break;
+                }
+            }
+
+            if (activeCue) {
+                customSub.innerHTML = activeCue.text.replace(/\n/g, '<br>');
+                customSub.style.display = 'block';
+            } else {
+                customSub.innerHTML = '';
+                customSub.style.display = 'none';
+            }
+        }
+
+        function prepareSubtitleSession(subtitleUrl, token) {
+            subtitleCues = [];
+            subtitleSyncToken = token;
+
+            const vttText = decodeSubtitleToVtt(subtitleUrl);
+            if (!vttText) {
+                return false;
+            }
+
+            if (!/^WEBVTT/i.test(vttText.trim())) {
+                console.warn('Subtitle data is missing WEBVTT header');
+                return false;
+            }
+
+            subtitleCues = parseVttToCues(vttText);
+            if (!subtitleCues.length) {
+                console.warn('Subtitle VTT parsed with zero cues');
+                return false;
+            }
+
+            return true;
+        }
+
+        function startSubtitleSync(player, token) {
+            if (!subtitleCues.length || token !== subtitleSyncToken) {
+                return;
+            }
+
+            clearSubtitleSyncListeners();
+
+            function syncSubtitleNow() {
+                if (token !== subtitleSyncToken) {
+                    return;
+                }
+                renderSubtitleAtTime(player.currentTime || 0, token);
+            }
+
+            subtitleTimeUpdateHandler = syncSubtitleNow;
+            subtitleSeekedHandler = syncSubtitleNow;
+            player.addEventListener('timeupdate', subtitleTimeUpdateHandler);
+            player.addEventListener('seeked', subtitleSeekedHandler);
+            syncSubtitleNow();
         }
 
         function isDramafrenProxyUrl(url) {
@@ -1821,60 +2054,17 @@
             return 'source';
         }
 
-        function attachSubtitle(player, subtitleUrl) {
-            if (!subtitleUrl) return;
-
-            let finalSubLink = subtitleUrl;
-            try {
-                const binaryStr = atob(subtitleUrl);
-                const bytes = new Uint8Array(binaryStr.length);
-                for (let i = 0; i < binaryStr.length; i++) {
-                    bytes[i] = binaryStr.charCodeAt(i);
-                }
-                const decodedVttText = new TextDecoder('utf-8').decode(bytes);
-                const blob = new Blob([decodedVttText], { type: 'text/vtt;charset=utf-8' });
-                finalSubLink = URL.createObjectURL(blob);
-                currentSubtitleBlobUrl = finalSubLink;
-            } catch (error) {}
-
-            const track = document.createElement('track');
-            track.src = finalSubLink;
-            track.kind = 'subtitles';
-            track.srclang = 'vi';
-            track.label = 'Tiếng Việt';
-            track.default = true;
-            player.appendChild(track);
-
-            track.addEventListener('load', function() {
-                const customSub = document.getElementById('custom-sub');
-                const textTrack = player.textTracks[player.textTracks.length - 1];
-                textTrack.mode = 'hidden';
-                textTrack.oncuechange = function() {
-                    const cues = textTrack.activeCues;
-                    if (cues && cues.length > 0) {
-                        customSub.innerHTML = cues[0].text.replace(/\n/g, '<br>');
-                        customSub.style.display = 'block';
-                    } else {
-                        customSub.style.display = 'none';
-                    }
-                };
-            });
-        }
-
         function playVideo(ep, startTime) {
-                        const player = document.getElementById('vidPlayer');
+            const player = document.getElementById('vidPlayer');
             const customSub = document.getElementById('custom-sub');
             const progressBar = document.getElementById('progress-bar');
             const btnPlay = document.getElementById('btn-play');
             const title = document.getElementById('episode-title');
             const timeDisplay = document.getElementById('time-display');
-            
+            const token = ++playbackToken;
             isSwitchingEpisode = true;
-        
-            cleanupCurrentMedia(); // Dọn dẹp player cũ trước
-        
-            // ✅ Lấy đúng token sau khi đã dọn dẹp xong
-            const token = playbackToken; 
+
+            cleanupCurrentMedia();
             customSub.innerHTML = '';
             customSub.style.display = 'none';
             progressBar.value = 0;
@@ -1892,8 +2082,12 @@
                 return;
             }
 
+            const hasSubtitle = prepareSubtitleSession(ep.subtitleUrl, token);
             const sourceMode = attachVideoSource(player, playbackUrl, token);
-            attachSubtitle(player, ep.subtitleUrl);
+
+            if (hasSubtitle) {
+                startSubtitleSync(player, token);
+            }
 
             if (startTime > 0) {
                 player.addEventListener('loadedmetadata', function restoreTimeOnce() {
@@ -1904,6 +2098,7 @@
                     if (player.duration && startTime < player.duration - 2) {
                         player.currentTime = startTime;
                     }
+                    renderSubtitleAtTime(player.currentTime || 0, token);
                 });
             }
 
