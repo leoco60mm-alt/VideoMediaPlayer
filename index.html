@@ -2061,10 +2061,10 @@
             const btnPlay = document.getElementById('btn-play');
             const title = document.getElementById('episode-title');
             const timeDisplay = document.getElementById('time-display');
-            const token = ++playbackToken;
             isSwitchingEpisode = true;
-
             cleanupCurrentMedia();
+            // Token chỉ tăng trong cleanupCurrentMedia(); không ++ thêm ở đây.
+            const token = playbackToken;
             customSub.innerHTML = '';
             customSub.style.display = 'none';
             progressBar.value = 0;
