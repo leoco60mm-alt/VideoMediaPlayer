@@ -1867,6 +1867,23 @@
             }
         }
 
+        function isDramaboxCdnUrl(url) {
+            if (!url) return false;
+
+            try {
+                const hostname = new URL(url).hostname.toLowerCase();
+                return hostname === 'dramabox.dramabos.online' || hostname.endsWith('.dramabos.online');
+            } catch (error) {
+                return false;
+            }
+        }
+
+        function needsLocalMediaProxy(url, sourceType) {
+            const originUrl = unwrapDramafrenProxyUrl(url);
+            if (!originUrl) return false;
+            return sourceType === 'dramabox' || isDramaboxCdnUrl(originUrl);
+        }
+
         function unwrapDramafrenProxyUrl(url) {
             if (!isDramafrenProxyUrl(url)) {
                 return url;
@@ -1882,6 +1899,7 @@
         function needsMediaProxy(url, sourceType) {
             const originUrl = unwrapDramafrenProxyUrl(url);
             if (!originUrl) return false;
+            if (needsLocalMediaProxy(originUrl, sourceType)) return false;
             if (sourceType === 'shortmax' || sourceType === 'dramawave') return true;
             if (/mydramawave\.com/i.test(originUrl)) return true;
             return /\.m3u8(\?|$)/i.test(originUrl) && /shorttv\.live/i.test(originUrl);
@@ -1893,6 +1911,11 @@
             }
 
             const originUrl = unwrapDramafrenProxyUrl(videoUrl);
+
+            if (needsLocalMediaProxy(originUrl, sourceType)) {
+                return API_BASE + '/media?url=' + encodeURIComponent(originUrl);
+            }
+
             if (!needsMediaProxy(originUrl, sourceType)) {
                 return originUrl;
             }
