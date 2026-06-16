@@ -1941,7 +1941,14 @@
             } catch (error) {}
         }
 
-        function getVideoType(videoUrl) {
+        function isDramaboxHlsEntryUrl(checkUrl) {
+            if (!checkUrl) return false;
+            if (/\.m3u8(\?|$)/i.test(checkUrl)) return true;
+            if (/dramaboxdb\.com/i.test(checkUrl)) return true;
+            return /dramabos\.online/i.test(checkUrl) && /\.mp4(\?|$)/i.test(checkUrl);
+        }
+
+        function getVideoType(videoUrl, sourceType) {
             let checkUrl = videoUrl;
 
             try {
@@ -1953,6 +1960,10 @@
                     }
                 }
             } catch (error) {}
+
+            if (sourceType === 'dramabox' && isDramaboxHlsEntryUrl(checkUrl)) {
+                return 'application/x-mpegURL';
+            }
 
             if (/\.m3u8(\?|$)/i.test(checkUrl)) return 'application/x-mpegURL';
             if (/\.mp4(\?|$)/i.test(checkUrl) || checkUrl.includes('mime_type=video_mp4')) return 'video/mp4';
@@ -2025,7 +2036,7 @@
         }
 
         function attachVideoSource(player, videoUrl, token) {
-            const type = getVideoType(videoUrl);
+            const type = getVideoType(videoUrl, currentSourceType);
             if (type === 'application/x-mpegURL') {
                 if (window.Hls && Hls.isSupported()) {
                     hlsInstance = new Hls();
