@@ -4,7 +4,7 @@
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
     <title>Player</title>
-    <script src="https://cdn.jsdelivr.net/npm/hls.js@latest"></script>
+    <script src="https://cdn.jsdelivr.net/npm/hls.js@1.5.17/dist/hls.min.js"></script>
     <style>
         * { box-sizing: border-box; }
         body {
@@ -721,7 +721,7 @@
         </div>
 
         <div id="player-shell">
-            <video id="vidPlayer" playsinline preload="metadata"></video>
+            <video id="vidPlayer" playsinline webkit-playsinline preload="metadata"></video>
             <div id="video-watermark" aria-hidden="true">syhsuah daushd oasdu aodsiu aiud authorization</div>
             <div id="custom-sub"></div>
             <div id="player-loading" aria-live="polite" aria-hidden="true">
@@ -777,6 +777,10 @@
         let pendingRefreshRequest = null;
         let hlsProxyBaseUrl = '';
         let currentSourceType = '';
+        let stallRecoveryTimer = null;
+        let playbackOriginUrl = '';
+        let playbackQualityTier = 0;
+        let playbackQualityDowngradeAttempted = false;
         const API_BASE = '/api';
         const SESSION_KEY = 'movieCrawlerPlayerState';
         const LOCAL_CACHE_KEY = 'movieCrawlerPlayerLocalCache';
@@ -809,14 +813,186 @@
 
             clearTimeout(playerLoadingTimer);
             clearTimeout(stalledLoadingTimer);
+            clearTimeout(stallRecoveryTimer);
             playerLoadingTimer = null;
             stalledLoadingTimer = null;
+            stallRecoveryTimer = null;
             overlay.classList.remove('show');
             overlay.setAttribute('aria-hidden', 'true');
         }
 
+        function isMobilePlaybackDevice() {
+            if (navigator.maxTouchPoints > 0) {
+                return true;
+            }
+
+            return Boolean(window.matchMedia && window.matchMedia('(pointer: coarse)').matches);
+        }
+
+        function prefersReducedPlaybackQuality() {
+            if (isMobilePlaybackDevice()) {
+                return true;
+            }
+
+            const cores = Number(navigator.hardwareConcurrency);
+            return Number.isFinite(cores) && cores > 0 && cores <= 4;
+        }
+
+        function isDramawaveOriginUrl(url) {
+            const originUrl = unwrapDramafrenProxyUrl(url);
+            return /mydramawave\.com/i.test(originUrl || '');
+        }
+
+        function downgradeDramawaveQualityStep(url) {
+            const steps = [
+                ['1080p', '720p'],
+                ['720p', '540p'],
+                ['540p', '480p'],
+                ['480p', '360p']
+            ];
+
+            for (let i = 0; i < steps.length; i += 1) {
+                const pattern = new RegExp(steps[i][0], 'i');
+                if (pattern.test(url)) {
+                    return url.replace(pattern, steps[i][1]);
+                }
+            }
+
+            return null;
+        }
+
+        function applyDramawaveQualityTier(originUrl, tier) {
+            let result = originUrl;
+
+            for (let i = 0; i < tier; i += 1) {
+                const next = downgradeDramawaveQualityStep(result);
+                if (!next || next === result) {
+                    break;
+                }
+                result = next;
+            }
+
+            return result;
+        }
+
+        function getInitialDramawaveQualityTier(originUrl) {
+            if (!isDramawaveOriginUrl(originUrl)) {
+                return 0;
+            }
+
+            return prefersReducedPlaybackQuality() ? 1 : 0;
+        }
+
+        function describeMediaError(code) {
+            if (code === 1) {
+                return 'Video bị huỷ tải (MEDIA_ERR_ABORTED)';
+            }
+            if (code === 2) {
+                return 'Lỗi mạng khi tải video (MEDIA_ERR_NETWORK)';
+            }
+            if (code === 3) {
+                return 'Máy không giải mã được video này (MEDIA_ERR_DECODE). Đang thử chất lượng thấp hơn...';
+            }
+            if (code === 4) {
+                return 'Định dạng video không được hỗ trợ (MEDIA_ERR_SRC_NOT_SUPPORTED)';
+            }
+
+            return 'Video gặp lỗi phát (code ' + code + ')';
+        }
+
+        function scheduleStallRecovery(player) {
+            clearTimeout(stallRecoveryTimer);
+            stallRecoveryTimer = setTimeout(function() {
+                stallRecoveryTimer = null;
+
+                if (!player || player.paused || player.ended || isSeeking) {
+                    return;
+                }
+
+                tryRecoverFromPlaybackStall(player);
+            }, 3000);
+        }
+
+        function replayWithOriginUrl(originUrl, resumeTime) {
+            const player = document.getElementById('vidPlayer');
+            const token = playbackToken;
+            isSwitchingEpisode = true;
+            cleanupCurrentMedia();
+            const activeToken = playbackToken;
+            const playbackUrl = resolvePlaybackUrl(originUrl, currentSourceType);
+
+            if (!playbackUrl) {
+                isSwitchingEpisode = false;
+                return;
+            }
+
+            showPlayerLoading('Đang thử chất lượng thấp hơn...', 0);
+            const sourceMode = attachVideoSource(player, playbackUrl, activeToken);
+
+            function restoreAndPlay() {
+                if (!isCurrentPlayback(activeToken)) {
+                    return;
+                }
+
+                if (resumeTime > 0 && player.duration && resumeTime < player.duration - 2) {
+                    player.currentTime = resumeTime;
+                }
+
+                safePlay(player, { playbackToken: activeToken });
+            }
+
+            if (sourceMode === 'hls') {
+                isSwitchingEpisode = false;
+                return;
+            }
+
+            player.load();
+
+            if (resumeTime > 0) {
+                player.addEventListener('loadedmetadata', function restoreOnce() {
+                    player.removeEventListener('loadedmetadata', restoreOnce);
+                    restoreAndPlay();
+                });
+            } else {
+                playWhenSourceReady(player, activeToken);
+            }
+
+            isSwitchingEpisode = false;
+        }
+
+        function tryRecoverFromPlaybackStall(player) {
+            if (player.error && player.error.code) {
+                console.warn('[player] media error', player.error.code);
+            }
+
+            if (
+                !playbackQualityDowngradeAttempted &&
+                isDramawaveOriginUrl(playbackOriginUrl)
+            ) {
+                const nextTier = playbackQualityTier + 1;
+                const fallbackOrigin = applyDramawaveQualityTier(playbackOriginUrl, nextTier);
+                const currentOrigin = applyDramawaveQualityTier(playbackOriginUrl, playbackQualityTier);
+
+                if (fallbackOrigin && fallbackOrigin !== currentOrigin) {
+                    playbackQualityTier = nextTier;
+                    playbackQualityDowngradeAttempted = true;
+                    replayWithOriginUrl(fallbackOrigin, player.currentTime || 0);
+                    return;
+                }
+            }
+
+            if (player.error && player.error.code) {
+                showToast(describeMediaError(player.error.code));
+                return;
+            }
+
+            showToast('Video bị gián đoạn. Thử Chrome hoặc bấm tua nhẹ.');
+        }
+
         function showStalledLoadingIfNeeded(player) {
             clearTimeout(stalledLoadingTimer);
+            clearTimeout(stallRecoveryTimer);
+            stallRecoveryTimer = null;
 
             const startTime = player.currentTime || 0;
             stalledLoadingTimer = setTimeout(function() {
@@ -825,6 +1001,7 @@
 
                 if (!player.paused && !player.ended && !isSeeking && isStillStalled) {
                     showPlayerLoading('Đang tải thêm...', 0);
+                    scheduleStallRecovery(player);
                 }
             }, 2000);
         }
@@ -1432,6 +1609,10 @@
             if (!movieBox || !player || playerUiBound) return;
             playerUiBound = true;
 
+            if (isMobilePlaybackDevice()) {
+                player.preload = 'auto';
+            }
+
             function getFsEl() {
                 return document.fullscreenElement || document.webkitFullscreenElement || null;
             }
@@ -1488,7 +1669,11 @@
             player.addEventListener('seeked', hidePlayerLoading);
             player.addEventListener('canplay', hidePlayerLoading);
             player.addEventListener('canplaythrough', hidePlayerLoading);
-            player.addEventListener('playing', hidePlayerLoading);
+            player.addEventListener('playing', function() {
+                hidePlayerLoading();
+                clearTimeout(stallRecoveryTimer);
+                stallRecoveryTimer = null;
+            });
             player.addEventListener('loadeddata', hidePlayerLoading);
             player.addEventListener('timeupdate', updateTimeUi);
             player.addEventListener('timeupdate', function() {
@@ -2035,11 +2220,42 @@
             player.addEventListener('canplay', onReady);
         }
 
+        function createHlsInstance() {
+            const mobile = isMobilePlaybackDevice();
+
+            return new Hls({
+                enableWorker: !mobile,
+                lowLatencyMode: false,
+                startFragPrefetch: true,
+                maxBufferLength: mobile ? 60 : 30,
+                maxMaxBufferLength: 120,
+                maxBufferHole: 0.5,
+                fragLoadingMaxRetry: 6,
+                fragLoadingRetryDelay: 1000,
+                manifestLoadingMaxRetry: 4,
+                levelLoadingMaxRetry: 4
+            });
+        }
+
         function attachVideoSource(player, videoUrl, token) {
             const type = getVideoType(videoUrl, currentSourceType);
             if (type === 'application/x-mpegURL') {
                 if (window.Hls && Hls.isSupported()) {
-                    hlsInstance = new Hls();
+                    const mobile = isMobilePlaybackDevice();
+                    const minBufferedFrags = mobile ? 2 : 1;
+                    let bufferedFrags = 0;
+                    let playStarted = false;
+
+                    function tryStartHlsPlayback() {
+                        if (playStarted || !isCurrentPlayback(token)) {
+                            return;
+                        }
+
+                        playStarted = true;
+                        safePlay(player, { playbackToken: token });
+                    }
+
+                    hlsInstance = createHlsInstance();
                     hlsInstance.on(Hls.Events.MANIFEST_LOADING, function() {
                         if (!isCurrentPlayback(token)) {
                             return;
@@ -2051,30 +2267,48 @@
                             return;
                         }
                         showPlayerLoading('Đang chuẩn bị phát...', 0);
-                        safePlay(player, { playbackToken: token });
+                        setTimeout(function() {
+                            tryStartHlsPlayback();
+                        }, 8000);
                     });
                     hlsInstance.on(Hls.Events.FRAG_BUFFERED, function() {
                         if (!isCurrentPlayback(token)) {
                             return;
                         }
+
+                        bufferedFrags += 1;
                         hidePlayerLoading();
+
+                        if (bufferedFrags >= minBufferedFrags) {
+                            tryStartHlsPlayback();
+                        }
                     });
                     hlsInstance.on(Hls.Events.ERROR, function(event, data) {
                         if (!isCurrentPlayback(token)) {
                             return;
                         }
-                        if (data && data.fatal) {
+
+                        if (!data) {
+                            return;
+                        }
+
+                        if (data.type === Hls.ErrorTypes.NETWORK_ERROR) {
+                            if (data.fatal) {
+                                hlsInstance.startLoad();
+                            } else if (data.details === Hls.ErrorDetails.FRAG_LOAD_ERROR) {
+                                hlsInstance.startLoad();
+                            }
+                            return;
+                        }
+
+                        if (data.fatal) {
                             switch (data.type) {
-                                case Hls.ErrorTypes.NETWORK_ERROR:
-                                    hlsInstance.startLoad();
-                                    break;
                                 case Hls.ErrorTypes.MEDIA_ERROR:
                                     hlsInstance.recoverMediaError();
                                     break;
                                 default:
                                     hidePlayerLoading();
-                                    // Đổi text để nhận diện
-                                    showToast('Lỗi luồng HLS: Không phát được video'); 
+                                    showToast('Lỗi luồng HLS: Không phát được video');
                                     hlsInstance.destroy();
                                     break;
                             }
@@ -2124,7 +2358,14 @@
             title.textContent = ep.name || ('Tập ' + ep.ep);
             showPlayerLoading('Đang tải ' + (ep.name || ('Tập ' + ep.ep)) + '...', 0);
 
-            const playbackUrl = resolvePlaybackUrl(ep.videoUrl, currentSourceType);
+            playbackOriginUrl = unwrapDramafrenProxyUrl(ep.videoUrl || '');
+            playbackQualityTier = getInitialDramawaveQualityTier(playbackOriginUrl);
+            playbackQualityDowngradeAttempted = false;
+
+            const optimizedOrigin = isDramawaveOriginUrl(playbackOriginUrl)
+                ? applyDramawaveQualityTier(playbackOriginUrl, playbackQualityTier)
+                : playbackOriginUrl;
+            const playbackUrl = resolvePlaybackUrl(optimizedOrigin, currentSourceType);
             if (!playbackUrl) {
                 hidePlayerLoading();
                 isSwitchingEpisode = false;
