@@ -786,6 +786,33 @@
         const LOCAL_CACHE_KEY = 'movieCrawlerPlayerLocalCache';
         const HISTORY_CACHE_KEY = 'movieCrawlerPlayerHistoryCache';
         const MAX_HISTORY_ITEMS = 10;
+        let streamTokenReloadInFlight = false;
+
+        function isInternalStreamUrl(url) {
+            return /\/api\/stream\//i.test(String(url || ''));
+        }
+
+        function reloadWatchDataForExpiredToken() {
+            if (streamTokenReloadInFlight) {
+                return;
+            }
+            streamTokenReloadInFlight = true;
+
+            const player = document.getElementById('vidPlayer');
+            const preserveTime = player && Number(player.currentTime) > 0 ? Number(player.currentTime) : 0;
+
+            clearSessionState();
+            loadMovieData({
+                skipLocalCache: true,
+                forceRefresh: true,
+                preserveEpisodeIndex: currentEpisodeIndex,
+                preserveCurrentTime: preserveTime
+            }).finally(function() {
+                setTimeout(function() {
+                    streamTokenReloadInFlight = false;
+                }, 3000);
+            });
+        }
 
         function formatTime(seconds) {
             if (!isFinite(seconds) || seconds < 0) return '0:00';
@@ -2307,6 +2334,12 @@
                         }
 
                         if (data.type === Hls.ErrorTypes.NETWORK_ERROR) {
+                            const responseCode = data.response && Number(data.response.code);
+                            if (isInternalStreamUrl(videoUrl) && (responseCode === 401 || responseCode === 403 || responseCode === 404)) {
+                                hlsInstance.destroy();
+                                reloadWatchDataForExpiredToken();
+                                return;
+                            }
                             if (data.fatal) {
                                 hlsInstance.startLoad();
                             } else if (data.details === Hls.ErrorDetails.FRAG_LOAD_ERROR) {
