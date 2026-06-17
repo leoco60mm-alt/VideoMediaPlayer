@@ -829,15 +829,6 @@
             return Boolean(window.matchMedia && window.matchMedia('(pointer: coarse)').matches);
         }
 
-        function prefersReducedPlaybackQuality() {
-            if (isMobilePlaybackDevice()) {
-                return true;
-            }
-
-            const cores = Number(navigator.hardwareConcurrency);
-            return Number.isFinite(cores) && cores > 0 && cores <= 4;
-        }
-
         function isDramawaveOriginUrl(url) {
             const originUrl = unwrapDramafrenProxyUrl(url);
             return /mydramawave\.com/i.test(originUrl || '');
@@ -875,12 +866,22 @@
             return result;
         }
 
-        function getInitialDramawaveQualityTier(originUrl) {
-            if (!isDramawaveOriginUrl(originUrl)) {
-                return 0;
+        async function isProxiedPlaybackUrlAvailable(originUrl) {
+            const playbackUrl = resolvePlaybackUrl(originUrl, currentSourceType);
+            if (!playbackUrl) {
+                return false;
             }
 
-            return prefersReducedPlaybackQuality() ? 1 : 0;
+            try {
+                const response = await fetch(playbackUrl, {
+                    method: 'GET',
+                    headers: { Range: 'bytes=0-1' }
+                });
+
+                return response.status === 200 || response.status === 206;
+            } catch (error) {
+                return false;
+            }
         }
 
         function describeMediaError(code) {
@@ -909,7 +910,9 @@
                     return;
                 }
 
-                tryRecoverFromPlaybackStall(player);
+                tryRecoverFromPlaybackStall(player).catch(function(error) {
+                    console.warn('[player] stall recovery failed', error);
+                });
             }, 3000);
         }
 
@@ -960,7 +963,7 @@
             isSwitchingEpisode = false;
         }
 
-        function tryRecoverFromPlaybackStall(player) {
+        async function tryRecoverFromPlaybackStall(player) {
             if (player.error && player.error.code) {
                 console.warn('[player] media error', player.error.code);
             }
@@ -969,16 +972,27 @@
                 !playbackQualityDowngradeAttempted &&
                 isDramawaveOriginUrl(playbackOriginUrl)
             ) {
-                const nextTier = playbackQualityTier + 1;
-                const fallbackOrigin = applyDramawaveQualityTier(playbackOriginUrl, nextTier);
-                const currentOrigin = applyDramawaveQualityTier(playbackOriginUrl, playbackQualityTier);
+                let tier = playbackQualityTier + 1;
 
-                if (fallbackOrigin && fallbackOrigin !== currentOrigin) {
-                    playbackQualityTier = nextTier;
-                    playbackQualityDowngradeAttempted = true;
-                    replayWithOriginUrl(fallbackOrigin, player.currentTime || 0);
-                    return;
+                while (tier <= 4) {
+                    const fallbackOrigin = applyDramawaveQualityTier(playbackOriginUrl, tier);
+                    const currentOrigin = applyDramawaveQualityTier(playbackOriginUrl, playbackQualityTier);
+
+                    if (!fallbackOrigin || fallbackOrigin === currentOrigin) {
+                        break;
+                    }
+
+                    if (await isProxiedPlaybackUrlAvailable(fallbackOrigin)) {
+                        playbackQualityTier = tier;
+                        playbackQualityDowngradeAttempted = true;
+                        replayWithOriginUrl(fallbackOrigin, player.currentTime || 0);
+                        return;
+                    }
+
+                    tier += 1;
                 }
+
+                playbackQualityDowngradeAttempted = true;
             }
 
             if (player.error && player.error.code) {
@@ -2359,13 +2373,10 @@
             showPlayerLoading('Đang tải ' + (ep.name || ('Tập ' + ep.ep)) + '...', 0);
 
             playbackOriginUrl = unwrapDramafrenProxyUrl(ep.videoUrl || '');
-            playbackQualityTier = getInitialDramawaveQualityTier(playbackOriginUrl);
+            playbackQualityTier = 0;
             playbackQualityDowngradeAttempted = false;
 
-            const optimizedOrigin = isDramawaveOriginUrl(playbackOriginUrl)
-                ? applyDramawaveQualityTier(playbackOriginUrl, playbackQualityTier)
-                : playbackOriginUrl;
-            const playbackUrl = resolvePlaybackUrl(optimizedOrigin, currentSourceType);
+            const playbackUrl = resolvePlaybackUrl(playbackOriginUrl, currentSourceType);
             if (!playbackUrl) {
                 hidePlayerLoading();
                 isSwitchingEpisode = false;
