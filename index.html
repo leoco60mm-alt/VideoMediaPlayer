@@ -215,8 +215,34 @@
             font-size: 15px;
             font-family: ui-monospace, Consolas, monospace;
         }
-        #memberCodeInput {
+        .member-code-field {
+            position: relative;
             margin-top: 10px;
+        }
+        .member-code-field #memberCodeInput {
+            margin-top: 0;
+            padding-right: 48px;
+        }
+        #btnToggleMemberCode {
+            position: absolute;
+            top: 50%;
+            right: 8px;
+            transform: translateY(-50%);
+            width: 36px;
+            height: 36px;
+            border: none;
+            border-radius: 8px;
+            background: transparent;
+            color: #aaa;
+            cursor: pointer;
+            font-size: 16px;
+            line-height: 1;
+        }
+        #btnToggleMemberCode:hover {
+            color: #fff;
+            background: rgba(255, 255, 255, 0.08);
+        }
+        #memberCodeInput {
             text-transform: uppercase;
             letter-spacing: 0.08em;
         }
@@ -676,13 +702,22 @@
             background: #e50914;
             color: #fff;
         }
+        #history-panel,
+        #btn-history,
+        #history-overlay,
+        #fab-history-player {
+            display: none !important;
+        }
     </style>
 </head>
 <body>
     <div id="setup-box">
         <div class="setup-wrap">
             <input id="encryptedInput" placeholder="Nhập mã" spellcheck="false" autocomplete="off">
-            <input id="memberCodeInput" type="text" maxlength="16" placeholder="Mã hội viên (16 ký tự)" spellcheck="false" autocomplete="off" autocapitalize="characters">
+            <div class="member-code-field">
+                <input id="memberCodeInput" type="password" maxlength="16" placeholder="Mã hội viên (16 ký tự)" spellcheck="false" autocomplete="off" autocapitalize="characters">
+                <button type="button" id="btnToggleMemberCode" aria-label="Hiện mã hội viên" title="Hiện/ẩn mã">👁</button>
+            </div>
 
             <div class="row">
                 <button type="button" class="btn btn-primary" id="btnLoad">Lấy dữ liệu</button>
@@ -793,8 +828,8 @@
         const HEARTBEAT_INTERVAL_MS = 10000;
         const SESSION_KEY = 'movieCrawlerPlayerState';
         const LOCAL_CACHE_KEY = 'movieCrawlerPlayerLocalCache';
-        const HISTORY_CACHE_KEY = 'movieCrawlerPlayerHistoryCache';
-        const MAX_HISTORY_ITEMS = 10;
+        const LATEST_EPISODE_CACHE_KEY = 'movieCrawlerPlayerLatestCache';
+        const MEMBER_CODE_CACHE_KEY = 'movieCrawlerPlayerMemberCode';
         let streamTokenReloadInFlight = false;
         let currentWatchContext = null;
         let watchTimeEnabled = false;
@@ -802,6 +837,30 @@
         let watchSessionId = '';
         let heartbeatTimer = null;
         let shownWatchWarnings = {};
+        let sessionSaveInFlight = false;
+        let pendingSessionSave = false;
+        let pendingSessionSaveExtra = null;
+
+        function loadMemberCodeFromCache() {
+            try {
+                const cached = localStorage.getItem(MEMBER_CODE_CACHE_KEY);
+                const input = document.getElementById('memberCodeInput');
+                if (cached && input && /^[A-Z0-9]{16}$/.test(cached)) {
+                    input.value = cached;
+                }
+            } catch (error) {}
+        }
+
+        function saveMemberCodeToCache(code) {
+            const normalized = normalizeMemberCode(code);
+            if (!/^[A-Z0-9]{16}$/.test(normalized)) {
+                return;
+            }
+
+            try {
+                localStorage.setItem(MEMBER_CODE_CACHE_KEY, normalized);
+            } catch (error) {}
+        }
 
         function normalizeMemberCode(value) {
             return String(value || '').trim().toUpperCase();
@@ -938,6 +997,7 @@
             remainingSeconds = Number(data.remainingSeconds) || 0;
             updateRemainingTimeDisplay();
             handleWatchWarnings(data.warnings || []);
+            return data;
         }
 
         function stopHeartbeat() {
@@ -1302,34 +1362,42 @@
             };
         }
 
-        function readHistoryState() {
+        function readLatestEpisodeCache() {
             try {
-                const raw = localStorage.getItem(HISTORY_CACHE_KEY);
-                const parsed = raw ? JSON.parse(raw) : [];
-
-                if (Array.isArray(parsed)) {
-                    return parsed.filter(function(item) {
-                        return item && item.cacheKey && Array.isArray(item.episodes) && item.episodes.length;
-                    });
+                const raw = localStorage.getItem(LATEST_EPISODE_CACHE_KEY);
+                if (raw) {
+                    const parsed = JSON.parse(raw);
+                    if (parsed && parsed.cacheKey && Array.isArray(parsed.episodes) && parsed.episodes.length) {
+                        return parsed;
+                    }
                 }
             } catch (error) {}
 
             try {
                 const legacyRaw = localStorage.getItem(LOCAL_CACHE_KEY);
                 const legacy = legacyRaw ? JSON.parse(legacyRaw) : null;
-
                 if (legacy && legacy.cacheKey && Array.isArray(legacy.episodes) && legacy.episodes.length) {
-                    return [legacy];
+                    return legacy;
                 }
             } catch (error) {}
 
-            return [];
+            return null;
         }
 
-        function writeHistoryState(items) {
+        function writeLatestEpisodeCache(state) {
             try {
-                localStorage.setItem(HISTORY_CACHE_KEY, JSON.stringify(items.slice(0, MAX_HISTORY_ITEMS)));
+                localStorage.setItem(LATEST_EPISODE_CACHE_KEY, JSON.stringify(state));
                 localStorage.removeItem(LOCAL_CACHE_KEY);
+            } catch (error) {}
+        }
+
+        function clearLatestEpisodeCache(cacheKey) {
+            try {
+                const latest = readLatestEpisodeCache();
+                if (!latest || !cacheKey || latest.cacheKey === cacheKey) {
+                    localStorage.removeItem(LATEST_EPISODE_CACHE_KEY);
+                    localStorage.removeItem(LOCAL_CACHE_KEY);
+                }
             } catch (error) {}
         }
 
@@ -1372,23 +1440,74 @@
             };
 
             try {
-                const serializedState = JSON.stringify(state);
-                sessionStorage.setItem(SESSION_KEY, serializedState);
-                upsertHistoryState(state);
+                sessionStorage.setItem(SESSION_KEY, JSON.stringify(state));
+                writeLatestEpisodeCache(state);
             } catch (error) {}
         }
 
-        function upsertHistoryState(state) {
-            const history = readHistoryState();
-            const nextHistory = [
-                state,
-                ...history.filter(function(item) {
-                    return item.cacheKey !== state.cacheKey;
-                })
-            ].slice(0, MAX_HISTORY_ITEMS);
+        async function persistSessionStateWithHeartbeat(extra) {
+            if (!episodesList.length) {
+                return false;
+            }
 
-            writeHistoryState(nextHistory);
-            renderHistoryLists();
+            if (hasActiveWatchSession()) {
+                const player = document.getElementById('vidPlayer');
+                const playing = player && !player.paused && !player.ended;
+                try {
+                    await sendHeartbeat(playing);
+                } catch (error) {
+                    return false;
+                }
+            }
+
+            saveSessionState(extra);
+            return true;
+        }
+
+        async function schedulePersistSessionState(extra) {
+            if (sessionSaveInFlight) {
+                pendingSessionSave = true;
+                pendingSessionSaveExtra = extra || pendingSessionSaveExtra;
+                return;
+            }
+
+            sessionSaveInFlight = true;
+            try {
+                await persistSessionStateWithHeartbeat(extra);
+            } finally {
+                sessionSaveInFlight = false;
+                if (pendingSessionSave) {
+                    const nextExtra = pendingSessionSaveExtra;
+                    pendingSessionSave = false;
+                    pendingSessionSaveExtra = null;
+                    schedulePersistSessionState(nextExtra);
+                }
+            }
+        }
+
+        function flushSessionStateOnPageHide() {
+            if (!episodesList.length) {
+                return;
+            }
+
+            if (hasActiveWatchSession()) {
+                const player = document.getElementById('vidPlayer');
+                const payload = buildHeartbeatPayload(
+                    getMemberCodeInput(),
+                    player && !player.paused && !player.ended
+                );
+
+                try {
+                    fetch(API_BASE.replace(/\/+$/, '') + '/watch/heartbeat', {
+                        method: 'POST',
+                        headers: Object.assign({ 'Content-Type': 'application/json' }, getClientDeviceHeaders()),
+                        body: JSON.stringify(payload),
+                        keepalive: true
+                    });
+                } catch (error) {}
+            }
+
+            saveSessionState();
         }
 
         function readSessionState() {
@@ -1398,25 +1517,14 @@
             } catch (error) {}
 
             try {
-                const history = readHistoryState();
+                const latest = readLatestEpisodeCache();
                 const currentKey = getCurrentSessionKey();
-                const matched = history.find(function(item) {
-                    return item.cacheKey === currentKey;
-                });
-
-                if (matched) {
-                    return matched;
+                if (latest && latest.cacheKey === currentKey) {
+                    return latest;
                 }
+            } catch (error) {}
 
-                if (history.length) {
-                    return history[0];
-                }
-
-                const raw = localStorage.getItem(LOCAL_CACHE_KEY);
-                return raw ? JSON.parse(raw) : null;
-            } catch (error) {
-                return null;
-            }
+            return null;
         }
 
         function clearSessionState() {
@@ -1425,93 +1533,11 @@
             } catch (error) {}
         }
 
-        function removeHistoryItem(cacheKey) {
-            const nextHistory = readHistoryState().filter(function(item) {
-                return item.cacheKey !== cacheKey;
-            });
+        function renderHistoryLists() {}
 
-            writeHistoryState(nextHistory);
-            renderHistoryLists();
-        }
+        function selectHistoryItem() {}
 
-        function renderHistoryLists() {
-            const history = readHistoryState();
-            const containers = [
-                document.getElementById('historyListDesktop'),
-                document.getElementById('historyListPopup')
-            ].filter(Boolean);
-
-            containers.forEach(function(container) {
-                container.innerHTML = '';
-
-                if (!history.length) {
-                    const empty = document.createElement('div');
-                    empty.className = 'history-empty';
-                    empty.textContent = 'Chưa có phim nào được lưu. Sau khi lấy dữ liệu thành công, phim sẽ xuất hiện ở đây.';
-                    container.appendChild(empty);
-                    return;
-                }
-
-                history.forEach(function(item) {
-                    const btn = document.createElement('button');
-                    btn.type = 'button';
-                    btn.className = 'history-item';
-                    btn.innerHTML = [
-                        '<div class="history-item-title"></div>',
-                        '<div class="history-item-meta"></div>'
-                    ].join('');
-                    btn.querySelector('.history-item-title').textContent = getHistoryTitle(item);
-                    btn.querySelector('.history-item-meta').textContent = getHistoryMeta(item);
-                    btn.addEventListener('click', function() {
-                        selectHistoryItem(item.cacheKey);
-                    });
-                    container.appendChild(btn);
-                });
-            });
-        }
-
-        function toggleHistoryPopup(show) {
-            const overlay = document.getElementById('history-overlay');
-            if (!overlay) return;
-
-            overlay.classList.toggle('show', Boolean(show));
-            overlay.setAttribute('aria-hidden', show ? 'false' : 'true');
-        }
-
-        function selectHistoryItem(cacheKey) {
-            const item = readHistoryState().find(function(entry) {
-                return entry.cacheKey === cacheKey;
-            });
-
-            if (!item) {
-                renderHistoryLists();
-                return;
-            }
-
-            const encryptedInput = document.getElementById('encryptedInput');
-            if (encryptedInput && item.encryptedText) encryptedInput.value = item.encryptedText;
-
-            try {
-                sessionStorage.setItem(SESSION_KEY, JSON.stringify(item));
-            } catch (error) {}
-
-            currentMovieTitle = getHistoryTitle(item);
-            toggleHistoryPopup(false);
-
-            const episodes = item.episodes
-                .map(normalizeEpisode)
-                .filter(ep => ep.videoUrl);
-
-            episodesList = episodes;
-
-            renderEpisodes(
-                episodes,
-                item.currentEpisodeIndex || 0,
-                item.currentTime || 0
-            );
-
-            enterPlayerMode();
-        }
+        function toggleHistoryPopup() {}
 
         function base64UrlToBytes(value) {
             let normalized = value.replace(/-/g, '+').replace(/_/g, '/');
@@ -1781,7 +1807,7 @@
                 btn.disabled = true;
                 if (reloadBtn) reloadBtn.disabled = true;
 
-                if (!opts.skipLocalCache && restoreSessionIfAvailable({ requireCurrentKey: true })) {
+                if (!opts.skipLocalCache && await restoreSessionIfAvailable({ requireCurrentKey: true })) {
                     return;
                 }
 
@@ -1791,6 +1817,7 @@
                 const myUrl = await resolveProtectedWatchUrl(encryptedText);
                 validateMemberCodeInput();
                 const memberCode = getMemberCodeInput();
+                saveMemberCodeToCache(memberCode);
 
                 const apiUrl = buildProtectedWatchRequestUrl(myUrl, memberCode);
                 const data = await fetchWatchDataWithRetry(apiUrl);
@@ -1936,7 +1963,7 @@
                 const now = Date.now();
                 if (now - lastSessionSaveAt > 5000) {
                     lastSessionSaveAt = now;
-                    saveSessionState();
+                    schedulePersistSessionState();
                 }
             });
             player.addEventListener('loadedmetadata', updateTimeUi);
@@ -1945,8 +1972,9 @@
             player.addEventListener('ended', function() {
                 hidePlayerLoading();
                 updatePlayIcon();
-                saveSessionState({ currentTime: 0 });
-                playNextEpisode(true);
+                persistSessionStateWithHeartbeat({ currentTime: 0 }).then(function() {
+                    playNextEpisode(true);
+                });
             });
             player.addEventListener('error', function() {
                 if (!player.error) return;
@@ -2025,7 +2053,7 @@
             btn.disabled = episodesList.length === 0 || currentEpisodeIndex >= episodesList.length - 1;
         }
 
-        function playEpisodeByIndex(index, fromAuto, startTime) {
+        async function playEpisodeByIndex(index, fromAuto, startTime) {
             if (index < 0 || index >= episodesList.length) return false;
             currentEpisodeIndex = index;
             document.querySelectorAll('.ep-btn').forEach(function(btn) {
@@ -2033,7 +2061,7 @@
             });
             const activeBtn = document.querySelector('.ep-btn[data-index="' + index + '"]');
             if (activeBtn) activeBtn.classList.add('active');
-            saveSessionState({ currentTime: startTime || 0 });
+            await persistSessionStateWithHeartbeat({ currentTime: startTime || 0 });
             playVideo(episodesList[index], startTime || 0);
             updateNextEpButton();
             if (!fromAuto) togglePopup(false);
@@ -2695,7 +2723,7 @@
             el._t = setTimeout(function() { el.style.opacity = '0'; }, 2200);
         }
 
-        function restoreSessionIfAvailable(options) {
+        async function restoreSessionIfAvailable(options) {
             const state = readSessionState();
             if (!state || !Array.isArray(state.episodes) || !state.episodes.length) {
                 return false;
@@ -2716,7 +2744,7 @@
             const index = Number.isInteger(state.currentEpisodeIndex)
                 ? Math.min(Math.max(state.currentEpisodeIndex, 0), episodes.length - 1)
                 : 0;
-            const time = Number(state.currentTime) > 0 ? Number(state.currentTime) : 0;
+            let time = Number(state.currentTime) > 0 ? Number(state.currentTime) : 0;
 
             const encryptedInput = document.getElementById('encryptedInput');
             if (encryptedInput && state.encryptedText) encryptedInput.value = state.encryptedText;
@@ -2728,9 +2756,17 @@
             watchTimeEnabled = Boolean(state.watchTimeEnabled && currentWatchContext);
             remainingSeconds = Number(state.remainingSeconds) || 0;
             updateRemainingTimeDisplay();
+
             if (watchTimeEnabled) {
+                ensureWatchSessionId();
+                try {
+                    await sendHeartbeat(false);
+                } catch (error) {
+                    time = 0;
+                }
                 startHeartbeat();
             }
+
             currentMovieTitle = getHistoryTitle(state);
             currentSourceType = state.sourceType || '';
             renderEpisodes(episodes, index, time);
@@ -2762,7 +2798,7 @@
             const request = pendingRefreshRequest;
             pendingRefreshRequest = null;
             toggleRefreshConfirm(false);
-            removeHistoryItem(request.cacheKey);
+            clearLatestEpisodeCache(request.cacheKey);
             clearSessionState();
             cleanupCurrentMedia();
             episodesList = [];
@@ -2819,11 +2855,33 @@
         document.getElementById('encryptedInput').addEventListener('keydown', function(e) {
             if (e.key === 'Enter') loadMovieData();
         });
+        document.getElementById('btnToggleMemberCode').addEventListener('click', function() {
+            const input = document.getElementById('memberCodeInput');
+            const btn = document.getElementById('btnToggleMemberCode');
+            if (!input || !btn) return;
+
+            const showing = input.type === 'text';
+            input.type = showing ? 'password' : 'text';
+            btn.setAttribute('aria-label', showing ? 'Hiện mã hội viên' : 'Ẩn mã hội viên');
+            btn.setAttribute('title', showing ? 'Hiện mã' : 'Ẩn mã');
+        });
+        document.getElementById('memberCodeInput').addEventListener('input', function(e) {
+            const input = e.target;
+            const start = input.selectionStart;
+            const end = input.selectionEnd;
+            input.value = normalizeMemberCode(input.value);
+            if (start != null && end != null) {
+                input.setSelectionRange(start, end);
+            }
+        });
+        document.getElementById('memberCodeInput').addEventListener('blur', function() {
+            saveMemberCodeToCache(getMemberCodeInput());
+        });
         document.getElementById('memberCodeInput').addEventListener('keydown', function(e) {
             if (e.key === 'Enter') loadMovieData();
         });
         window.addEventListener('pagehide', function() {
-            saveSessionState();
+            flushSessionStateOnPageHide();
         });
 
         function hydrateInputFromUrlParams() {
@@ -2844,20 +2902,20 @@
 
         window.addEventListener('DOMContentLoaded', async function() {
             await loadClientConfig();
+            loadMemberCodeFromCache();
 
             const hasDataParam = hydrateInputFromUrlParams();
 
             setupCustomPlayer();
-            renderHistoryLists();
 
             if (hasDataParam) {
-                if (restoreSessionIfAvailable({ requireCurrentKey: true })) {
+                if (await restoreSessionIfAvailable({ requireCurrentKey: true })) {
                     return;
                 }
                 return;
             }
 
-            restoreSessionIfAvailable();
+            await restoreSessionIfAvailable();
         });
     </script>
 </body>
