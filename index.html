@@ -796,7 +796,6 @@
         const HISTORY_CACHE_KEY = 'movieCrawlerPlayerHistoryCache';
         const MAX_HISTORY_ITEMS = 10;
         let streamTokenReloadInFlight = false;
-        let currentAccessToken = '';
         let currentWatchContext = null;
         let watchTimeEnabled = false;
         let remainingSeconds = 0;
@@ -891,7 +890,7 @@
         }
 
         function hasActiveWatchSession() {
-            return watchTimeEnabled && (currentWatchContext || currentAccessToken);
+            return watchTimeEnabled && currentWatchContext;
         }
 
         function buildHeartbeatPayload(memberCode, playing) {
@@ -907,8 +906,6 @@
                 payload.videoId = currentWatchContext.videoId;
                 payload.type = currentWatchContext.type;
                 payload.watchTier = currentWatchContext.watchTier;
-            } else if (currentAccessToken) {
-                payload.token = currentAccessToken;
             }
 
             return payload;
@@ -968,8 +965,7 @@
                 type: Number(data.watchContext.type),
                 watchTier: data.watchContext.watchTier || 'full'
             } : null;
-            currentAccessToken = data && data.accessToken ? data.accessToken : '';
-            watchTimeEnabled = Boolean(data && data.watchTimeEnabled && (currentWatchContext || currentAccessToken));
+            watchTimeEnabled = Boolean(data && data.watchTimeEnabled && currentWatchContext);
             remainingSeconds = data && data.remainingSeconds != null ? Number(data.remainingSeconds) : 0;
             shownWatchWarnings = {};
             watchSessionId = '';
@@ -984,7 +980,6 @@
         function resetWatchSessionState() {
             stopHeartbeat();
             watchTimeEnabled = false;
-            currentAccessToken = '';
             currentWatchContext = null;
             remainingSeconds = 0;
             watchSessionId = '';
@@ -1366,7 +1361,6 @@
                 encryptedText: inputState.encryptedText,
                 movieTitle: currentMovieTitle || '',
                 sourceType: currentSourceType || '',
-                accessToken: currentAccessToken || '',
                 watchContext: currentWatchContext,
                 watchTimeEnabled: watchTimeEnabled,
                 remainingSeconds: remainingSeconds,
@@ -1795,12 +1789,10 @@
                 showPlayerLoading(LOAD_DATA_MESSAGE, 0);
 
                 const myUrl = await resolveProtectedWatchUrl(encryptedText);
+                validateMemberCodeInput();
                 const memberCode = getMemberCodeInput();
-                if (memberCode && !/^[A-Z0-9]{16}$/.test(memberCode)) {
-                    throw new Error('Vui lòng nhập mã hội viên 16 ký tự.');
-                }
 
-                const apiUrl = buildProtectedWatchRequestUrl(myUrl, memberCode || undefined);
+                const apiUrl = buildProtectedWatchRequestUrl(myUrl, memberCode);
                 const data = await fetchWatchDataWithRetry(apiUrl);
                 applyWatchSessionFromData(data);
 
@@ -2728,13 +2720,12 @@
 
             const encryptedInput = document.getElementById('encryptedInput');
             if (encryptedInput && state.encryptedText) encryptedInput.value = state.encryptedText;
-            currentAccessToken = state.accessToken || '';
             currentWatchContext = state.watchContext && state.watchContext.videoId ? {
                 videoId: state.watchContext.videoId,
                 type: Number(state.watchContext.type),
                 watchTier: state.watchContext.watchTier || 'full'
             } : null;
-            watchTimeEnabled = Boolean(state.watchTimeEnabled && (currentWatchContext || currentAccessToken));
+            watchTimeEnabled = Boolean(state.watchTimeEnabled && currentWatchContext);
             remainingSeconds = Number(state.remainingSeconds) || 0;
             updateRemainingTimeDisplay();
             if (watchTimeEnabled) {
