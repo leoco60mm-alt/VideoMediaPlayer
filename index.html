@@ -705,8 +705,8 @@
 
     <div id="confirm-overlay" aria-hidden="true">
         <div class="confirm-card">
-            <h3 class="confirm-title">Lấy dữ liệu mới nhất?</h3>
-            <p class="confirm-message">Dữ liệu cũ sẽ được xoá đi để lấy mới dữ liệu. Bạn chắc chứ?</p>
+            <h3 class="confirm-title">Tải lại dữ liệu từ server?</h3>
+            <p class="confirm-message">Cache local sẽ được xóa và tải lại từ server (ưu tiên video đã archive trên R2). Không crawl lại nguồn dramafren.</p>
             <div class="confirm-actions">
                 <button type="button" id="confirm-cancel">Huỷ</button>
                 <button type="button" id="confirm-ok">Đồng ý</button>
@@ -792,6 +792,23 @@
             return /\/api\/stream\//i.test(String(url || ''));
         }
 
+        function normalizeInternalStreamUrl(url) {
+            const text = String(url || '').trim();
+            if (!isInternalStreamUrl(text)) {
+                return text;
+            }
+
+            if (/^https?:\/\//i.test(text)) {
+                return text;
+            }
+
+            try {
+                return new URL(text, window.location.origin).href;
+            } catch (error) {
+                return text;
+            }
+        }
+
         function reloadWatchDataForExpiredToken() {
             if (streamTokenReloadInFlight) {
                 return;
@@ -804,7 +821,6 @@
             clearSessionState();
             loadMovieData({
                 skipLocalCache: true,
-                forceRefresh: true,
                 preserveEpisodeIndex: currentEpisodeIndex,
                 preserveCurrentTime: preserveTime
             }).finally(function() {
@@ -997,6 +1013,7 @@
 
             if (
                 !playbackQualityDowngradeAttempted &&
+                !isInternalStreamUrl(playbackOriginUrl) &&
                 isDramawaveOriginUrl(playbackOriginUrl)
             ) {
                 let tier = playbackQualityTier + 1;
@@ -1467,18 +1484,13 @@
             return episodes;
         }
 
-        function buildProtectedWatchRequestUrl(myUrl, forceRefresh) {
+        function buildProtectedWatchRequestUrl(myUrl) {
             const base = API_BASE.replace(/\/+$/, '');
             if (!base) {
                 throw new Error('Chưa cấu hình API server.');
             }
 
-            let requestUrl = base + '?data=' + encodeURIComponent(myUrl);
-            if (forceRefresh) {
-                requestUrl += '&forceRefresh=1';
-            }
-
-            return requestUrl;
+            return base + '?data=' + encodeURIComponent(myUrl);
         }
 
         function getClientDeviceHeaders() {
@@ -1574,13 +1586,11 @@
                 }
 
                 setStatus('loading', LOAD_DATA_MESSAGE);
-                if (opts.forceRefresh) {
-                    showPlayerLoading(LOAD_DATA_MESSAGE, 0);
-                }
+                showPlayerLoading(LOAD_DATA_MESSAGE, 0);
 
                 const myUrl = await resolveProtectedWatchUrl(encryptedText, password);
 
-                const apiUrl = buildProtectedWatchRequestUrl(myUrl, opts.forceRefresh);
+                const apiUrl = buildProtectedWatchRequestUrl(myUrl);
                 const data = await fetchWatchDataWithRetry(apiUrl);
 
                 const episodes = normalizeApiData(data);
@@ -2108,6 +2118,10 @@
         }
 
         function needsLocalMediaProxy(url, sourceType) {
+            if (isInternalStreamUrl(url)) {
+                return false;
+            }
+
             const originUrl = unwrapDramafrenProxyUrl(url);
             if (!originUrl) return false;
             return sourceType === 'dramabox' || isDramaboxCdnUrl(originUrl);
@@ -2126,6 +2140,10 @@
         }
 
         function needsMediaProxy(url, sourceType) {
+            if (isInternalStreamUrl(url)) {
+                return false;
+            }
+
             const originUrl = unwrapDramafrenProxyUrl(url);
             if (!originUrl) return false;
             if (needsLocalMediaProxy(originUrl, sourceType)) return false;
@@ -2137,6 +2155,10 @@
         function resolvePlaybackUrl(videoUrl, sourceType) {
             if (!videoUrl) {
                 return '';
+            }
+
+            if (isInternalStreamUrl(videoUrl)) {
+                return normalizeInternalStreamUrl(videoUrl);
             }
 
             const originUrl = unwrapDramafrenProxyUrl(videoUrl);
@@ -2539,8 +2561,7 @@
 
             setTimeout(function() {
                 loadMovieData({
-                    skipLocalCache: true,
-                    forceRefresh: true
+                    skipLocalCache: true
                 });
             }, 0);
         }
