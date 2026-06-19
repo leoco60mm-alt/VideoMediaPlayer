@@ -205,7 +205,7 @@
             font-weight: 600;
         }
         #encryptedInput,
-        #passwordInput {
+        #memberCodeInput {
             width: 100%;
             padding: 14px 16px;
             border: 1px solid #333;
@@ -215,11 +215,13 @@
             font-size: 15px;
             font-family: ui-monospace, Consolas, monospace;
         }
-        #passwordInput {
+        #memberCodeInput {
             margin-top: 10px;
+            text-transform: uppercase;
+            letter-spacing: 0.08em;
         }
         #encryptedInput:focus,
-        #passwordInput:focus {
+        #memberCodeInput:focus {
             outline: none;
             border-color: #e50914;
         }
@@ -680,7 +682,7 @@
     <div id="setup-box">
         <div class="setup-wrap">
             <input id="encryptedInput" placeholder="Nhập mã" spellcheck="false" autocomplete="off">
-            <input id="passwordInput" type="password" value="1234" placeholder="Mật khẩu giải mã" spellcheck="false" autocomplete="current-password">
+            <input id="memberCodeInput" type="text" maxlength="16" placeholder="Mã hội viên (16 ký tự)" spellcheck="false" autocomplete="off" autocapitalize="characters">
 
             <div class="row">
                 <button type="button" class="btn btn-primary" id="btnLoad">Lấy dữ liệu</button>
@@ -739,6 +741,7 @@
                 <div class="controls-row">
                     <button type="button" class="ctrl-btn" id="btn-play" aria-label="Phát / Tạm">▶</button>
                     <span id="episode-title">Chưa chọn tập</span>
+                    <span id="watch-remaining" style="display:none;font-size:12px;color:#ffd27a;font-weight:700;"></span>
                     <span id="time-display">0:00 / 0:00</span>
                     <button type="button" class="ctrl-btn" id="btn-fs" aria-label="Toàn màn hình">⛶</button>
                 </div>
@@ -786,11 +789,208 @@
         let playbackQualityTier = 0;
         let playbackQualityDowngradeAttempted = false;
         const API_BASE = '/api';
+        const MSC1_DECRYPT_PASSWORD = '1234';
+        const HEARTBEAT_INTERVAL_MS = 10000;
         const SESSION_KEY = 'movieCrawlerPlayerState';
         const LOCAL_CACHE_KEY = 'movieCrawlerPlayerLocalCache';
         const HISTORY_CACHE_KEY = 'movieCrawlerPlayerHistoryCache';
         const MAX_HISTORY_ITEMS = 10;
         let streamTokenReloadInFlight = false;
+        let currentAccessToken = '';
+        let currentWatchContext = null;
+        let watchTimeEnabled = false;
+        let remainingSeconds = 0;
+        let watchSessionId = '';
+        let heartbeatTimer = null;
+        let shownWatchWarnings = {};
+
+        function normalizeMemberCode(value) {
+            return String(value || '').trim().toUpperCase();
+        }
+
+        function getMemberCodeInput() {
+            const input = document.getElementById('memberCodeInput');
+            return normalizeMemberCode(input ? input.value : '');
+        }
+
+        function validateMemberCodeInput() {
+            const code = getMemberCodeInput();
+            if (!/^[A-Z0-9]{16}$/.test(code)) {
+                throw new Error('Vui lòng nhập mã hội viên 16 ký tự.');
+            }
+            return code;
+        }
+
+        function formatRemainingTime(totalSeconds) {
+            const safe = Math.max(0, Number(totalSeconds) || 0);
+            const mins = Math.floor(safe / 60);
+            const hours = Math.floor(mins / 60);
+            const remMins = mins % 60;
+            return String(hours).padStart(2, '0') + ':' + String(remMins).padStart(2, '0');
+        }
+
+        function updateRemainingTimeDisplay() {
+            const el = document.getElementById('watch-remaining');
+            if (!el) {
+                return;
+            }
+
+            if (!watchTimeEnabled) {
+                el.style.display = 'none';
+                el.textContent = '';
+                return;
+            }
+
+            el.style.display = '';
+            el.textContent = 'Còn lại: ' + formatRemainingTime(remainingSeconds);
+        }
+
+        function ensureWatchSessionId() {
+            if (!watchSessionId) {
+                watchSessionId = 'ws_' + Date.now() + '_' + Math.random().toString(36).slice(2, 10);
+            }
+            return watchSessionId;
+        }
+
+        function handleWatchWarnings(warnings) {
+            if (!Array.isArray(warnings)) {
+                return;
+            }
+
+            warnings.forEach(function(key) {
+                if (shownWatchWarnings[key]) {
+                    return;
+                }
+                shownWatchWarnings[key] = true;
+                if (key === '10min') showToast('Còn 10 phút xem');
+                if (key === '5min') showToast('Còn 5 phút xem');
+                if (key === '1min') showToast('Còn 1 phút xem');
+            });
+        }
+
+        function handleWatchSessionStatus(data) {
+            stopHeartbeat();
+            const player = document.getElementById('vidPlayer');
+            if (player) {
+                player.pause();
+            }
+
+            if (data && data.status === 'occupied') {
+                showToast('Liên kết đang được sử dụng');
+                setStatus('error', 'Liên kết đang được sử dụng');
+                return;
+            }
+
+            if (data && data.status === 'expired') {
+                showToast('Đã sử dụng hết thời lượng xem');
+                setStatus('error', 'Đã sử dụng hết thời lượng xem');
+                return;
+            }
+
+            setStatus('error', (data && data.message) || 'Không thể xem phim');
+        }
+
+        function hasActiveWatchSession() {
+            return watchTimeEnabled && (currentWatchContext || currentAccessToken);
+        }
+
+        function buildHeartbeatPayload(memberCode, playing) {
+            const player = document.getElementById('vidPlayer');
+            const payload = {
+                memberCode: memberCode,
+                playing: Boolean(playing),
+                sessionId: ensureWatchSessionId(),
+                currentTime: player && isFinite(player.currentTime) ? player.currentTime : 0
+            };
+
+            if (currentWatchContext) {
+                payload.videoId = currentWatchContext.videoId;
+                payload.type = currentWatchContext.type;
+                payload.watchTier = currentWatchContext.watchTier;
+            } else if (currentAccessToken) {
+                payload.token = currentAccessToken;
+            }
+
+            return payload;
+        }
+
+        async function sendHeartbeat(playing) {
+            if (!hasActiveWatchSession()) {
+                return;
+            }
+
+            const memberCode = getMemberCodeInput();
+            const res = await fetchWithTimeout(API_BASE.replace(/\/+$/, '') + '/watch/heartbeat', {
+                method: 'POST',
+                headers: Object.assign({ 'Content-Type': 'application/json' }, getClientDeviceHeaders()),
+                body: JSON.stringify(buildHeartbeatPayload(memberCode, playing))
+            }, 15000);
+
+            let data;
+            try {
+                data = await res.json();
+            } catch (parseError) {
+                throw new Error('Không thể cập nhật thời lượng xem');
+            }
+
+            if (!res.ok || data.status === 'expired' || data.status === 'occupied' || data.success === false) {
+                handleWatchSessionStatus(data);
+                throw new Error((data && data.message) || 'Không thể xem phim');
+            }
+
+            remainingSeconds = Number(data.remainingSeconds) || 0;
+            updateRemainingTimeDisplay();
+            handleWatchWarnings(data.warnings || []);
+        }
+
+        function stopHeartbeat() {
+            if (heartbeatTimer) {
+                clearInterval(heartbeatTimer);
+                heartbeatTimer = null;
+            }
+        }
+
+        function startHeartbeat() {
+            stopHeartbeat();
+            if (!hasActiveWatchSession()) {
+                return;
+            }
+
+            heartbeatTimer = setInterval(function() {
+                const player = document.getElementById('vidPlayer');
+                sendHeartbeat(player && !player.paused && !player.ended).catch(function() {});
+            }, HEARTBEAT_INTERVAL_MS);
+        }
+
+        function applyWatchSessionFromData(data) {
+            currentWatchContext = data && data.watchContext ? {
+                videoId: data.watchContext.videoId,
+                type: Number(data.watchContext.type),
+                watchTier: data.watchContext.watchTier || 'full'
+            } : null;
+            currentAccessToken = data && data.accessToken ? data.accessToken : '';
+            watchTimeEnabled = Boolean(data && data.watchTimeEnabled && (currentWatchContext || currentAccessToken));
+            remainingSeconds = data && data.remainingSeconds != null ? Number(data.remainingSeconds) : 0;
+            shownWatchWarnings = {};
+            watchSessionId = '';
+            updateRemainingTimeDisplay();
+            if (watchTimeEnabled) {
+                startHeartbeat();
+            } else {
+                stopHeartbeat();
+            }
+        }
+
+        function resetWatchSessionState() {
+            stopHeartbeat();
+            watchTimeEnabled = false;
+            currentAccessToken = '';
+            currentWatchContext = null;
+            remainingSeconds = 0;
+            watchSessionId = '';
+            shownWatchWarnings = {};
+            updateRemainingTimeDisplay();
+        }
 
         function isInternalStreamUrl(url) {
             return /\/api\/stream\//i.test(String(url || ''));
@@ -1098,15 +1298,12 @@
 
         function getCurrentSessionKey() {
             const encryptedText = document.getElementById('encryptedInput').value.trim();
-            const password = document.getElementById('passwordInput').value;
-
-            return encryptedText + '\n' + password;
+            return encryptedText;
         }
 
         function getCurrentInputState() {
             return {
-                encryptedText: document.getElementById('encryptedInput').value.trim(),
-                password: document.getElementById('passwordInput').value
+                encryptedText: document.getElementById('encryptedInput').value.trim()
             };
         }
 
@@ -1167,9 +1364,12 @@
             const state = {
                 cacheKey: getCurrentSessionKey(),
                 encryptedText: inputState.encryptedText,
-                password: inputState.password,
                 movieTitle: currentMovieTitle || '',
                 sourceType: currentSourceType || '',
+                accessToken: currentAccessToken || '',
+                watchContext: currentWatchContext,
+                watchTimeEnabled: watchTimeEnabled,
+                remainingSeconds: remainingSeconds,
                 episodes: episodesList,
                 currentEpisodeIndex: currentEpisodeIndex,
                 currentTime: player && isFinite(player.currentTime) ? player.currentTime : 0,
@@ -1295,9 +1495,7 @@
             }
 
             const encryptedInput = document.getElementById('encryptedInput');
-            const passwordInput = document.getElementById('passwordInput');
             if (encryptedInput && item.encryptedText) encryptedInput.value = item.encryptedText;
-            if (passwordInput && item.password != null) passwordInput.value = item.password;
 
             try {
                 sessionStorage.setItem(SESSION_KEY, JSON.stringify(item));
@@ -1410,7 +1608,7 @@
             return watchUrl.toString();
         }
 
-        async function resolveProtectedWatchUrl(encryptedText, password) {
+        async function resolveProtectedWatchUrl(encryptedText) {
             const raw = (encryptedText || '').trim();
             if (!raw) {
                 throw new Error('Chưa nhập dữ liệu đã mã hoá.');
@@ -1418,9 +1616,9 @@
 
             let decryptedText;
             try {
-                decryptedText = await decryptShareCode(raw, password || '');
+                decryptedText = await decryptShareCode(raw, MSC1_DECRYPT_PASSWORD);
             } catch (error) {
-                throw new Error('Giải mã MSC1 thất bại. Kiểm tra mật khẩu hoặc mã chia sẻ.');
+                throw new Error('Giải mã liên kết thất bại. Kiểm tra mã chia sẻ.');
             }
 
             return parseMyUrlFromShareCodePlaintext(decryptedText);
@@ -1488,13 +1686,17 @@
             return episodes;
         }
 
-        function buildProtectedWatchRequestUrl(myUrl) {
+        function buildProtectedWatchRequestUrl(myUrl, memberCode) {
             const base = API_BASE.replace(/\/+$/, '');
             if (!base) {
                 throw new Error('Chưa cấu hình API server.');
             }
 
-            return base + '?data=' + encodeURIComponent(myUrl);
+            let url = base + '?data=' + encodeURIComponent(myUrl);
+            if (memberCode) {
+                url += '&memberCode=' + encodeURIComponent(memberCode);
+            }
+            return url;
         }
 
         function getClientDeviceHeaders() {
@@ -1570,14 +1772,14 @@
                     continue;
                 }
 
-                throw new Error(LOAD_DATA_FAILED_MESSAGE);
+                const message = (data && data.message) || LOAD_DATA_FAILED_MESSAGE;
+                throw new Error(message);
             }
         }
 
         async function loadMovieData(options) {
             const opts = options || {};
             const encryptedText = document.getElementById('encryptedInput').value.trim();
-            const password = document.getElementById('passwordInput').value;
             const btn = document.getElementById('btnLoad');
             const reloadBtn = document.getElementById('btn-reload');
 
@@ -1592,10 +1794,15 @@
                 setStatus('loading', LOAD_DATA_MESSAGE);
                 showPlayerLoading(LOAD_DATA_MESSAGE, 0);
 
-                const myUrl = await resolveProtectedWatchUrl(encryptedText, password);
+                const myUrl = await resolveProtectedWatchUrl(encryptedText);
+                const memberCode = getMemberCodeInput();
+                if (memberCode && !/^[A-Z0-9]{16}$/.test(memberCode)) {
+                    throw new Error('Vui lòng nhập mã hội viên 16 ký tự.');
+                }
 
-                const apiUrl = buildProtectedWatchRequestUrl(myUrl);
+                const apiUrl = buildProtectedWatchRequestUrl(myUrl, memberCode || undefined);
                 const data = await fetchWatchDataWithRetry(apiUrl);
+                applyWatchSessionFromData(data);
 
                 const episodes = normalizeApiData(data);
                 currentSourceType = data.type || '';
@@ -1623,7 +1830,8 @@
                 hidePlayerLoading();
             } catch (err) {
                 hidePlayerLoading();
-                setStatus('error', LOAD_DATA_FAILED_MESSAGE);
+                resetWatchSessionState();
+                setStatus('error', err && err.message ? err.message : LOAD_DATA_FAILED_MESSAGE);
             } finally {
                 btn.disabled = false;
                 if (reloadBtn) reloadBtn.disabled = false;
@@ -1641,6 +1849,7 @@
             const player = document.getElementById('vidPlayer');
             if (player) player.pause();
             hidePlayerLoading();
+            resetWatchSessionState();
             clearSessionState();
             episodesList = [];
             currentEpisodeIndex = 0;
@@ -2518,9 +2727,19 @@
             const time = Number(state.currentTime) > 0 ? Number(state.currentTime) : 0;
 
             const encryptedInput = document.getElementById('encryptedInput');
-            const passwordInput = document.getElementById('passwordInput');
             if (encryptedInput && state.encryptedText) encryptedInput.value = state.encryptedText;
-            if (passwordInput && state.password != null) passwordInput.value = state.password;
+            currentAccessToken = state.accessToken || '';
+            currentWatchContext = state.watchContext && state.watchContext.videoId ? {
+                videoId: state.watchContext.videoId,
+                type: Number(state.watchContext.type),
+                watchTier: state.watchContext.watchTier || 'full'
+            } : null;
+            watchTimeEnabled = Boolean(state.watchTimeEnabled && (currentWatchContext || currentAccessToken));
+            remainingSeconds = Number(state.remainingSeconds) || 0;
+            updateRemainingTimeDisplay();
+            if (watchTimeEnabled) {
+                startHeartbeat();
+            }
             currentMovieTitle = getHistoryTitle(state);
             currentSourceType = state.sourceType || '';
             renderEpisodes(episodes, index, time);
@@ -2609,7 +2828,7 @@
         document.getElementById('encryptedInput').addEventListener('keydown', function(e) {
             if (e.key === 'Enter') loadMovieData();
         });
-        document.getElementById('passwordInput').addEventListener('keydown', function(e) {
+        document.getElementById('memberCodeInput').addEventListener('keydown', function(e) {
             if (e.key === 'Enter') loadMovieData();
         });
         window.addEventListener('pagehide', function() {
@@ -2644,7 +2863,6 @@
                 if (restoreSessionIfAvailable({ requireCurrentKey: true })) {
                     return;
                 }
-                loadMovieData();
                 return;
             }
 
