@@ -219,15 +219,20 @@
             position: relative;
             margin-top: 10px;
         }
+        .member-code-field label {
+            display: block;
+            margin-bottom: 6px;
+            font-size: 13px;
+            color: #aaa;
+        }
         .member-code-field #memberCodeInput {
             margin-top: 0;
             padding-right: 48px;
         }
         #btnToggleMemberCode {
             position: absolute;
-            top: 50%;
             right: 8px;
-            transform: translateY(-50%);
+            bottom: 8px;
             width: 36px;
             height: 36px;
             border: none;
@@ -715,8 +720,9 @@
         <div class="setup-wrap">
             <input id="encryptedInput" placeholder="Nhập mã" spellcheck="false" autocomplete="off">
             <div class="member-code-field">
-                <input id="memberCodeInput" type="password" maxlength="16" placeholder="Mã hội viên (16 ký tự)" spellcheck="false" autocomplete="off" autocapitalize="characters">
-                <button type="button" id="btnToggleMemberCode" aria-label="Hiện mã hội viên" title="Hiện/ẩn mã">👁</button>
+                <label id="memberCodeLabel" for="memberCodeInput">Mã hội viên</label>
+                <input id="memberCodeInput" type="password" maxlength="24" placeholder="Mã hội viên (16 ký tự)" spellcheck="false" autocomplete="off" autocapitalize="characters">
+                <button type="button" id="btnToggleMemberCode" aria-label="Hiện mã xem" title="Hiện/ẩn mã">👁</button>
             </div>
 
             <div class="row">
@@ -840,6 +846,50 @@
         let sessionSaveInFlight = false;
         let pendingSessionSave = false;
         let pendingSessionSaveExtra = null;
+        let embeddedCustomerCode = '';
+
+        function isValidWatchCode(value) {
+            return /^[A-Z0-9]{16}$/.test(value) || /^[A-Z0-9]{24}$/.test(value);
+        }
+
+        function setMemberCodeFieldVisible(visible) {
+            const field = document.querySelector('.member-code-field');
+            if (field) {
+                field.style.display = visible ? '' : 'none';
+            }
+        }
+
+        function resetCustomerCodeField() {
+            embeddedCustomerCode = '';
+            const input = document.getElementById('memberCodeInput');
+            if (input) {
+                input.readOnly = false;
+                input.type = 'password';
+                input.value = '';
+                input.placeholder = 'Mã hội viên (16 ký tự)';
+            }
+            const label = document.getElementById('memberCodeLabel');
+            if (label) {
+                label.textContent = 'Mã hội viên';
+            }
+            const toggleBtn = document.getElementById('btnToggleMemberCode');
+            if (toggleBtn) {
+                toggleBtn.style.display = '';
+            }
+            setMemberCodeFieldVisible(true);
+        }
+
+        function applyCustomerCodeFromData(data) {
+            const customerCode = data &&
+                data.protectedPayload &&
+                (data.protectedPayload.CustomerCode || data.protectedPayload.customerCode);
+            if (!customerCode) {
+                return;
+            }
+
+            embeddedCustomerCode = normalizeMemberCode(customerCode);
+            setMemberCodeFieldVisible(false);
+        }
 
         function loadMemberCodeFromCache() {
             try {
@@ -867,15 +917,24 @@
         }
 
         function getMemberCodeInput() {
+            if (embeddedCustomerCode) {
+                return embeddedCustomerCode;
+            }
+
             const input = document.getElementById('memberCodeInput');
             return normalizeMemberCode(input ? input.value : '');
         }
 
         function validateMemberCodeInput() {
             const code = getMemberCodeInput();
-            if (!/^[A-Z0-9]{16}$/.test(code)) {
+            if (!code) {
+                return '';
+            }
+
+            if (!isValidWatchCode(code)) {
                 throw new Error('Vui lòng nhập mã hội viên 16 ký tự.');
             }
+
             return code;
         }
 
@@ -1044,6 +1103,7 @@
             remainingSeconds = 0;
             watchSessionId = '';
             shownWatchWarnings = {};
+            resetCustomerCodeField();
             updateRemainingTimeDisplay();
         }
 
@@ -1427,6 +1487,7 @@
             const state = {
                 cacheKey: getCurrentSessionKey(),
                 encryptedText: inputState.encryptedText,
+                embeddedCustomerCode: embeddedCustomerCode || '',
                 movieTitle: currentMovieTitle || '',
                 sourceType: currentSourceType || '',
                 watchContext: currentWatchContext,
@@ -1815,12 +1876,16 @@
                 showPlayerLoading(LOAD_DATA_MESSAGE, 0);
 
                 const myUrl = await resolveProtectedWatchUrl(encryptedText);
+                resetCustomerCodeField();
                 validateMemberCodeInput();
                 const memberCode = getMemberCodeInput();
-                saveMemberCodeToCache(memberCode);
+                if (memberCode) {
+                    saveMemberCodeToCache(memberCode);
+                }
 
                 const apiUrl = buildProtectedWatchRequestUrl(myUrl, memberCode);
                 const data = await fetchWatchDataWithRetry(apiUrl);
+                applyCustomerCodeFromData(data);
                 applyWatchSessionFromData(data);
 
                 const episodes = normalizeApiData(data);
@@ -2748,6 +2813,12 @@
 
             const encryptedInput = document.getElementById('encryptedInput');
             if (encryptedInput && state.encryptedText) encryptedInput.value = state.encryptedText;
+            embeddedCustomerCode = state.embeddedCustomerCode || '';
+            if (embeddedCustomerCode) {
+                setMemberCodeFieldVisible(false);
+            } else {
+                setMemberCodeFieldVisible(true);
+            }
             currentWatchContext = state.watchContext && state.watchContext.videoId ? {
                 videoId: state.watchContext.videoId,
                 type: Number(state.watchContext.type),
@@ -2862,7 +2933,7 @@
 
             const showing = input.type === 'text';
             input.type = showing ? 'password' : 'text';
-            btn.setAttribute('aria-label', showing ? 'Hiện mã hội viên' : 'Ẩn mã hội viên');
+            btn.setAttribute('aria-label', showing ? 'Hiện mã xem' : 'Ẩn mã xem');
             btn.setAttribute('title', showing ? 'Hiện mã' : 'Ẩn mã');
         });
         document.getElementById('memberCodeInput').addEventListener('input', function(e) {
