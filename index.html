@@ -960,9 +960,44 @@
             el.textContent = 'Còn lại: ' + formatRemainingTime(remainingSeconds);
         }
 
-        function ensureWatchSessionId() {
+        function getWatchSessionStorageKey(context) {
+            const ctx = context || currentWatchContext;
+            if (!ctx || !ctx.videoId) {
+                return '';
+            }
+
+            return 'msfb_watch_session_' + String(ctx.type) + '_' + String(ctx.videoId);
+        }
+
+        function loadPersistedWatchSessionId(context) {
+            const key = getWatchSessionStorageKey(context);
+            if (!key) {
+                return '';
+            }
+
+            try {
+                return localStorage.getItem(key) || '';
+            } catch (error) {
+                return '';
+            }
+        }
+
+        function persistWatchSessionId(context) {
+            const key = getWatchSessionStorageKey(context);
+            if (!key || !watchSessionId) {
+                return;
+            }
+
+            try {
+                localStorage.setItem(key, watchSessionId);
+            } catch (error) {}
+        }
+
+        function ensureWatchSessionId(context) {
             if (!watchSessionId) {
-                watchSessionId = 'ws_' + Date.now() + '_' + Math.random().toString(36).slice(2, 10);
+                const persisted = loadPersistedWatchSessionId(context);
+                watchSessionId = persisted || ('ws_' + Date.now() + '_' + Math.random().toString(36).slice(2, 10));
+                persistWatchSessionId(context);
             }
             return watchSessionId;
         }
@@ -1077,17 +1112,32 @@
         }
 
         function applyWatchSessionFromData(data) {
-            currentWatchContext = data && data.watchContext ? {
+            const nextContext = data && data.watchContext ? {
                 videoId: data.watchContext.videoId,
                 type: Number(data.watchContext.type),
                 watchTier: data.watchContext.watchTier || 'full'
             } : null;
+            const sameContext = Boolean(
+                currentWatchContext &&
+                nextContext &&
+                currentWatchContext.videoId === nextContext.videoId &&
+                currentWatchContext.type === nextContext.type &&
+                (currentWatchContext.watchTier || 'full') === (nextContext.watchTier || 'full')
+            );
+
+            currentWatchContext = nextContext;
             watchTimeEnabled = Boolean(data && data.watchTimeEnabled && currentWatchContext);
             remainingSeconds = data && data.remainingSeconds != null ? Number(data.remainingSeconds) : 0;
             shownWatchWarnings = {};
-            watchSessionId = '';
+
+            if (!sameContext) {
+                watchSessionId = '';
+            }
+
             updateRemainingTimeDisplay();
             if (watchTimeEnabled) {
+                ensureWatchSessionId(currentWatchContext);
+                sendHeartbeat(false).catch(function() {});
                 startHeartbeat();
             } else {
                 stopHeartbeat();
@@ -1505,6 +1555,7 @@
                 sourceType: currentSourceType || '',
                 watchContext: currentWatchContext,
                 watchTimeEnabled: watchTimeEnabled,
+                watchSessionId: watchSessionId || '',
                 remainingSeconds: remainingSeconds,
                 episodes: episodesList.map(slimEpisodeIndex),
                 currentEpisodeIndex: currentEpisodeIndex,
@@ -2967,10 +3018,11 @@
             } : null;
             watchTimeEnabled = Boolean(state.watchTimeEnabled && currentWatchContext);
             remainingSeconds = Number(state.remainingSeconds) || 0;
+            watchSessionId = state.watchSessionId || loadPersistedWatchSessionId(currentWatchContext) || '';
             updateRemainingTimeDisplay();
 
             if (watchTimeEnabled) {
-                ensureWatchSessionId();
+                ensureWatchSessionId(currentWatchContext);
                 try {
                     await sendHeartbeat(false);
                 } catch (error) {
