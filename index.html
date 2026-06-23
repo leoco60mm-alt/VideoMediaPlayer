@@ -880,9 +880,7 @@
         }
 
         function applyCustomerCodeFromData(data) {
-            const customerCode = data &&
-                data.protectedPayload &&
-                (data.protectedPayload.CustomerCode || data.protectedPayload.customerCode);
+            const customerCode = data && (data.customerCode || data.CustomerCode);
             if (!customerCode) {
                 return;
             }
@@ -1479,7 +1477,6 @@
         function getHistoryTitle(state) {
             if (state.movieTitle) return state.movieTitle;
             if (state.title) return state.title;
-            if (state.protectedPayload && state.protectedPayload.Title) return state.protectedPayload.Title;
             if (state.episodes && state.episodes[0]) return state.episodes[0].name || ('Tập ' + state.episodes[0].ep);
             return 'Phim đã lưu';
         }
@@ -1955,8 +1952,7 @@
 
                 const episodes = normalizeApiData(data);
                 currentSourceType = data.type || '';
-                currentMovieTitle = (data.protectedPayload && (data.protectedPayload.Title || data.protectedPayload.title)) ||
-                    data.title ||
+                currentMovieTitle = data.title ||
                     data.name ||
                     currentMovieTitle ||
                     'Phim đã lưu';
