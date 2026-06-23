@@ -2197,6 +2197,24 @@
             return new TextDecoder('utf-8').decode(bytes);
         }
 
+        function convertSrtToVtt(text) {
+            const source = String(text || '').replace(/\uFEFF/g, '').trim();
+            if (!source) {
+                return source;
+            }
+
+            if (/^WEBVTT/i.test(source)) {
+                return source;
+            }
+
+            if (!source.includes('-->')) {
+                return source;
+            }
+
+            const body = source.replace(/(\d{1,2}:\d{2}:\d{2}),(\d{3})/g, '$1.$2');
+            return 'WEBVTT\n\n' + body;
+        }
+
         function decodeSubtitleToVtt(subtitleUrl) {
             if (!subtitleUrl) {
                 return null;
@@ -2207,18 +2225,28 @@
                 return null;
             }
 
-            if (/^WEBVTT/i.test(raw) || raw.includes('-->')) {
-                return raw;
+            if (/^https?:\/\//i.test(raw)) {
+                return null;
             }
 
-            try {
-                const decoded = decodeBase64ToUtf8(raw);
-                if (decoded && (/^WEBVTT/i.test(decoded.trim()) || decoded.includes('-->'))) {
-                    return decoded;
-                }
-            } catch (error) {}
+            let text = null;
 
-            return null;
+            if (/^WEBVTT/i.test(raw) || raw.includes('-->')) {
+                text = raw;
+            } else {
+                try {
+                    const decoded = decodeBase64ToUtf8(raw);
+                    if (decoded && (/^WEBVTT/i.test(decoded.trim()) || decoded.includes('-->'))) {
+                        text = decoded;
+                    }
+                } catch (error) {}
+            }
+
+            if (!text) {
+                return null;
+            }
+
+            return convertSrtToVtt(text);
         }
 
         function parseVttTimestamp(value) {
