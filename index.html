@@ -753,7 +753,7 @@
     <div id="confirm-overlay" aria-hidden="true">
         <div class="confirm-card">
             <h3 class="confirm-title">Tải lại dữ liệu từ server?</h3>
-            <p class="confirm-message">Cache local sẽ được xóa và tải lại từ server (ưu tiên video đã archive trên R2). Không crawl lại nguồn dramafren.</p>
+            <p class="confirm-message">Cache local sẽ được xóa và tải lại từ server (ưu tiên video đã lưu trên R2). Không tải lại từ nguồn gốc bên ngoài.</p>
             <div class="confirm-actions">
                 <button type="button" id="confirm-cancel">Huỷ</button>
                 <button type="button" id="confirm-ok">Đồng ý</button>
@@ -1191,7 +1191,7 @@
         }
 
         function isDramawaveOriginUrl(url) {
-            const originUrl = unwrapDramafrenProxyUrl(url);
+            const originUrl = unwrapProxyTargetUrl(url);
             return /mydramawave\.com/i.test(originUrl || '');
         }
 
@@ -2415,13 +2415,12 @@
             syncSubtitleNow();
         }
 
-        function isDramafrenProxyUrl(url) {
+        function isWrappedProxyUrl(url) {
             if (!url) return false;
 
             try {
                 const parsedUrl = new URL(url);
-                return parsedUrl.hostname.toLowerCase().endsWith('.dramafren.org') &&
-                    parsedUrl.pathname.includes('/proxy') &&
+                return parsedUrl.pathname.includes('/proxy') &&
                     parsedUrl.searchParams.has('url');
             } catch (error) {
                 return false;
@@ -2454,7 +2453,7 @@
                     hostname === 'shorttv.live' ||
                     hostname.endsWith('.shorttv.live') ||
                     hostname.includes('akamai-static.shorttv') ||
-                    hostname === 'cdn-dramawave.dramafren.org';
+                    hostname === atob('Y2RuLWRyYW1hd2F2ZS5kcmFtYWZyZW4ub3Jn');
             } catch (error) {
                 return false;
             }
@@ -2465,14 +2464,14 @@
                 return false;
             }
 
-            const originUrl = unwrapDramafrenProxyUrl(url);
+            const originUrl = unwrapProxyTargetUrl(url);
             if (!originUrl) return false;
             if (sourceType === 'dramawave' || isDramawaveCdnUrl(originUrl)) return true;
             return sourceType === 'dramabox' || isDramaboxCdnUrl(originUrl);
         }
 
-        function unwrapDramafrenProxyUrl(url) {
-            if (!isDramafrenProxyUrl(url)) {
+        function unwrapProxyTargetUrl(url) {
+            if (!isWrappedProxyUrl(url)) {
                 return url;
             }
 
@@ -2488,7 +2487,7 @@
                 return false;
             }
 
-            const originUrl = unwrapDramafrenProxyUrl(url);
+            const originUrl = unwrapProxyTargetUrl(url);
             if (!originUrl) return false;
             if (needsLocalMediaProxy(originUrl, sourceType)) return false;
             if (sourceType === 'shortmax' || sourceType === 'dramawave') return true;
@@ -2505,7 +2504,7 @@
                 return normalizeInternalStreamUrl(videoUrl);
             }
 
-            const originUrl = unwrapDramafrenProxyUrl(videoUrl);
+            const originUrl = unwrapProxyTargetUrl(videoUrl);
 
             if (needsLocalMediaProxy(originUrl, sourceType)) {
                 return API_BASE + '/media?url=' + encodeURIComponent(originUrl);
@@ -2775,7 +2774,7 @@
             title.textContent = ep.name || ('Tập ' + ep.ep);
             showPlayerLoading('Đang tải ' + (ep.name || ('Tập ' + ep.ep)) + '...', 0);
 
-            playbackOriginUrl = unwrapDramafrenProxyUrl(ep.videoUrl || '');
+            playbackOriginUrl = unwrapProxyTargetUrl(ep.videoUrl || '');
             playbackQualityTier = 0;
             playbackQualityDowngradeAttempted = false;
 
