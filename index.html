@@ -829,6 +829,7 @@
         let playbackOriginUrl = '';
         let playbackQualityTier = 0;
         let playbackQualityDowngradeAttempted = false;
+        let protectedWatchMyUrl = '';
         const API_BASE = '/api';
         const MSC1_DECRYPT_PASSWORD = '1234';
         const HEARTBEAT_INTERVAL_MS = 10000;
@@ -1106,14 +1107,18 @@
             updateRemainingTimeDisplay();
         }
 
-        function isInternalStreamUrl(url) {
-            return /\/api\/stream\//i.test(String(url || ''));
+        function isInternalPlaybackUrl(url) {
+            return /\/api\/(stream|play)\//i.test(String(url || ''));
         }
 
-        function normalizeInternalStreamUrl(url) {
+        function isInternalStreamUrl(url) {
+            return isInternalPlaybackUrl(url);
+        }
+
+        function normalizePlaybackUrl(url) {
             const text = String(url || '').trim();
-            if (!isInternalStreamUrl(text)) {
-                return text;
+            if (!text) {
+                return '';
             }
 
             if (/^https?:\/\//i.test(text)) {
@@ -1121,31 +1126,42 @@
             }
 
             try {
-                return new URL(text, window.location.origin).href;
+                return new URL(text, API_BASE.replace(/\/+$/, '') || window.location.origin).href;
             } catch (error) {
                 return text;
             }
         }
 
-        function reloadWatchDataForExpiredToken() {
-            if (streamTokenReloadInFlight) {
+        function normalizeInternalStreamUrl(url) {
+            return normalizePlaybackUrl(url);
+        }
+
+        async function reloadEpisodePlaybackGrant() {
+            if (streamTokenReloadInFlight || !episodesList.length) {
                 return;
             }
+
             streamTokenReloadInFlight = true;
 
             const player = document.getElementById('vidPlayer');
             const preserveTime = player && Number(player.currentTime) > 0 ? Number(player.currentTime) : 0;
+            const currentEp = episodesList[currentEpisodeIndex];
 
-            clearSessionState();
-            loadMovieData({
-                skipLocalCache: true,
-                preserveEpisodeIndex: currentEpisodeIndex,
-                preserveCurrentTime: preserveTime
-            }).finally(function() {
+            try {
+                const episodeData = await fetchWatchEpisode(currentEp.ep);
+                playVideo(Object.assign({}, currentEp, episodeData), preserveTime);
+            } catch (error) {
+                hidePlayerLoading();
+                showToast((error && error.message) || 'Không thể tải lại tập phim');
+            } finally {
                 setTimeout(function() {
                     streamTokenReloadInFlight = false;
                 }, 3000);
-            });
+            }
+        }
+
+        function reloadWatchDataForExpiredToken() {
+            reloadEpisodePlaybackGrant();
         }
 
         function formatTime(seconds) {
@@ -1486,13 +1502,14 @@
             const state = {
                 cacheKey: getCurrentSessionKey(),
                 encryptedText: inputState.encryptedText,
+                protectedWatchMyUrl: protectedWatchMyUrl || '',
                 embeddedCustomerCode: embeddedCustomerCode || '',
                 movieTitle: currentMovieTitle || '',
                 sourceType: currentSourceType || '',
                 watchContext: currentWatchContext,
                 watchTimeEnabled: watchTimeEnabled,
                 remainingSeconds: remainingSeconds,
-                episodes: episodesList,
+                episodes: episodesList.map(slimEpisodeIndex),
                 currentEpisodeIndex: currentEpisodeIndex,
                 currentTime: player && isFinite(player.currentTime) ? player.currentTime : 0,
                 savedAt: Date.now(),
@@ -1710,6 +1727,14 @@
             return d.innerHTML;
         }
 
+        function slimEpisodeIndex(item, index) {
+            const epText = item.ep || String(index + 1).padStart(2, '0');
+            return {
+                ep: epText,
+                name: item.name || ('Tập ' + epText)
+            };
+        }
+
         function normalizeEpisode(item, index) {
             const epText = item.ep || item.name || String(index + 1).padStart(2, '0');
             return {
@@ -1717,7 +1742,8 @@
                 name: item.name || ('Tập ' + epText),
                 watchUrl: item.watchUrl || '',
                 videoUrl: item.videoUrl || item.urlVideo || item.url || '',
-                subtitleUrl: item.subtitleUrl || item.subUrl || item.urlSub || null
+                subtitleUrl: item.subtitleUrl || item.subUrl || item.urlSub || null,
+                playbackUrl: item.playbackUrl || ''
             };
         }
 
@@ -1745,18 +1771,10 @@
                 episodes = mapped.episodes;
             } else if (mapped.episode) {
                 episodes = [mapped.episode];
-            } else if (mapped.videoUrl) {
-                episodes = [{
-                    ep: '01',
-                    name: 'Tập 01',
-                    videoUrl: mapped.videoUrl,
-                    subtitleUrl: mapped.subtitleUrl || null,
-                    watchUrl: mapped.watchUrl || ''
-                }];
             }
 
-            episodes = episodes.map(normalizeEpisode).filter(function(ep) {
-                return !!ep.videoUrl;
+            episodes = episodes.map(slimEpisodeIndex).filter(function(ep) {
+                return !!ep.ep;
             });
 
             if (!episodes.length) {
@@ -1766,17 +1784,64 @@
             return episodes;
         }
 
-        function buildProtectedWatchRequestUrl(myUrl, memberCode) {
+        function buildWatchMovieRequestUrl(myUrl, memberCode) {
             const base = API_BASE.replace(/\/+$/, '');
             if (!base) {
                 throw new Error('Chưa cấu hình API server.');
             }
 
-            let url = base + '?data=' + encodeURIComponent(myUrl);
+            let url = base + '/watch/movie?data=' + encodeURIComponent(myUrl);
             if (memberCode) {
                 url += '&memberCode=' + encodeURIComponent(memberCode);
             }
             return url;
+        }
+
+        function buildWatchEpisodeRequestUrl(myUrl, memberCode, ep, sessionId) {
+            const base = API_BASE.replace(/\/+$/, '');
+            if (!base) {
+                throw new Error('Chưa cấu hình API server.');
+            }
+
+            let url = base + '/watch/episode?data=' + encodeURIComponent(myUrl);
+            url += '&ep=' + encodeURIComponent(ep);
+            url += '&sessionId=' + encodeURIComponent(sessionId);
+            if (memberCode) {
+                url += '&memberCode=' + encodeURIComponent(memberCode);
+            }
+            return url;
+        }
+
+        function buildProtectedWatchRequestUrl(myUrl, memberCode) {
+            return buildWatchMovieRequestUrl(myUrl, memberCode);
+        }
+
+        async function fetchWatchEpisode(ep) {
+            if (!protectedWatchMyUrl) {
+                throw new Error('Chưa có dữ liệu phim để tải tập.');
+            }
+
+            const sessionId = ensureWatchSessionId();
+            const memberCode = getMemberCodeInput();
+            const apiUrl = buildWatchEpisodeRequestUrl(protectedWatchMyUrl, memberCode, ep, sessionId);
+            const res = await fetchWithTimeout(apiUrl, {
+                method: 'GET',
+                headers: getClientDeviceHeaders()
+            }, CLIENT_FETCH_TIMEOUT_MS);
+
+            let data;
+            try {
+                data = await res.json();
+            } catch (parseError) {
+                throw new Error(LOAD_DATA_FAILED_MESSAGE);
+            }
+
+            if (!res.ok || !data || data.success === false || !data.episode) {
+                const message = (data && data.message) || LOAD_DATA_FAILED_MESSAGE;
+                throw new Error(message);
+            }
+
+            return data.episode;
         }
 
         function getClientDeviceHeaders() {
@@ -1875,6 +1940,7 @@
                 showPlayerLoading(LOAD_DATA_MESSAGE, 0);
 
                 const myUrl = await resolveProtectedWatchUrl(encryptedText);
+                protectedWatchMyUrl = myUrl;
                 resetCustomerCodeField();
                 validateMemberCodeInput();
                 const memberCode = getMemberCodeInput();
@@ -1938,6 +2004,7 @@
             currentEpisodeIndex = 0;
             currentMovieTitle = '';
             currentSourceType = '';
+            protectedWatchMyUrl = '';
             document.body.classList.remove('player-mode');
             document.getElementById('movie-box').style.display = 'none';
             document.getElementById('movie-box').classList.remove('show-player');
@@ -2125,11 +2192,22 @@
             });
             const activeBtn = document.querySelector('.ep-btn[data-index="' + index + '"]');
             if (activeBtn) activeBtn.classList.add('active');
-            await persistSessionStateWithHeartbeat({ currentTime: startTime || 0 });
-            playVideo(episodesList[index], startTime || 0);
-            updateNextEpButton();
-            if (!fromAuto) togglePopup(false);
-            return true;
+
+            const episodeMeta = episodesList[index];
+            showPlayerLoading('Đang tải ' + (episodeMeta.name || ('Tập ' + episodeMeta.ep)) + '...', 0);
+
+            try {
+                const episodeData = await fetchWatchEpisode(episodeMeta.ep);
+                await persistSessionStateWithHeartbeat({ currentTime: startTime || 0 });
+                playVideo(Object.assign({}, episodeMeta, episodeData), startTime || 0);
+                updateNextEpButton();
+                if (!fromAuto) togglePopup(false);
+                return true;
+            } catch (error) {
+                hidePlayerLoading();
+                showToast((error && error.message) || LOAD_DATA_FAILED_MESSAGE);
+                return false;
+            }
         }
 
         function playNextEpisode(fromAuto) {
@@ -2542,6 +2620,15 @@
         function getVideoType(videoUrl, sourceType) {
             let checkUrl = videoUrl;
 
+            if (isInternalPlaybackUrl(checkUrl)) {
+                if (/\.m3u8(?:[?#]|$)/i.test(checkUrl) || /play\.m3u8/i.test(checkUrl)) {
+                    return 'application/x-mpegURL';
+                }
+                if (/\.mp4(?:[?#]|$)/i.test(checkUrl) || /play\.mp4/i.test(checkUrl)) {
+                    return 'video/mp4';
+                }
+            }
+
             try {
                 if (String(videoUrl || '').includes('/media?url=')) {
                     const parsed = new URL(videoUrl, window.location.origin);
@@ -2704,9 +2791,9 @@
 
                         if (data.type === Hls.ErrorTypes.NETWORK_ERROR) {
                             const responseCode = data.response && Number(data.response.code);
-                            if (isInternalStreamUrl(videoUrl) && (responseCode === 401 || responseCode === 403 || responseCode === 404)) {
+                            if (isInternalPlaybackUrl(videoUrl) && (responseCode === 401 || responseCode === 403 || responseCode === 404)) {
                                 hlsInstance.destroy();
-                                reloadWatchDataForExpiredToken();
+                                reloadEpisodePlaybackGrant();
                                 return;
                             }
                             if (data.fatal) {
@@ -2774,14 +2861,15 @@
             title.textContent = ep.name || ('Tập ' + ep.ep);
             showPlayerLoading('Đang tải ' + (ep.name || ('Tập ' + ep.ep)) + '...', 0);
 
-            playbackOriginUrl = unwrapProxyTargetUrl(ep.videoUrl || '');
+            playbackOriginUrl = '';
             playbackQualityTier = 0;
             playbackQualityDowngradeAttempted = false;
 
-            const playbackUrl = resolvePlaybackUrl(playbackOriginUrl, currentSourceType);
+            const playbackUrl = normalizePlaybackUrl(ep.playbackUrl || '');
             if (!playbackUrl) {
                 hidePlayerLoading();
                 isSwitchingEpisode = false;
+                showToast('Không có URL phát cho tập này');
                 return;
             }
 
@@ -2847,8 +2935,8 @@
                 return false;
             }
 
-            const episodes = state.episodes.map(normalizeEpisode).filter(function(ep) {
-                return !!ep.videoUrl;
+            const episodes = state.episodes.map(slimEpisodeIndex).filter(function(ep) {
+                return !!ep.ep;
             });
             if (!episodes.length) {
                 clearSessionState();
@@ -2862,6 +2950,14 @@
 
             const encryptedInput = document.getElementById('encryptedInput');
             if (encryptedInput && state.encryptedText) encryptedInput.value = state.encryptedText;
+            protectedWatchMyUrl = state.protectedWatchMyUrl || '';
+            if (!protectedWatchMyUrl && state.encryptedText) {
+                try {
+                    protectedWatchMyUrl = await resolveProtectedWatchUrl(state.encryptedText);
+                } catch (error) {
+                    protectedWatchMyUrl = '';
+                }
+            }
             embeddedCustomerCode = state.embeddedCustomerCode || '';
             if (embeddedCustomerCode) {
                 setMemberCodeFieldVisible(false);
