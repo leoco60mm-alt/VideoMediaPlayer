@@ -3,6 +3,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+    <meta name="player-api-base" content="">
     <title>Player</title>
     <script src="https://cdn.jsdelivr.net/npm/hls.js@1.5.17/dist/hls.min.js"></script>
     <style>
@@ -824,15 +825,16 @@
         let isSwitchingEpisode = false;
         let pendingRefreshRequest = null;
         let hlsProxyBaseUrl = '';
+        let playbackMode = 'proxy';
         let currentSourceType = '';
         let stallRecoveryTimer = null;
         let playbackOriginUrl = '';
         let playbackQualityTier = 0;
         let playbackQualityDowngradeAttempted = false;
         let protectedWatchMyUrl = '';
-        const API_BASE = '/api';
+        let API_BASE = '/api';
         const MSC1_DECRYPT_PASSWORD = '1234';
-        const HEARTBEAT_INTERVAL_MS = 10000;
+        const HEARTBEAT_INTERVAL_MS = 30000;
         const SESSION_KEY = 'movieCrawlerPlayerState';
         const LOCAL_CACHE_KEY = 'movieCrawlerPlayerLocalCache';
         const LATEST_EPISODE_CACHE_KEY = 'movieCrawlerPlayerLatestCache';
@@ -1094,22 +1096,54 @@
 
         function stopHeartbeat() {
             if (heartbeatTimer) {
-                clearInterval(heartbeatTimer);
+                clearTimeout(heartbeatTimer);
                 heartbeatTimer = null;
             }
         }
 
-        function startHeartbeat() {
+        function shouldSendHeartbeatNow() {
+            return watchTimeEnabled && hasActiveWatchSession() && !document.hidden;
+        }
+
+        function scheduleHeartbeatTick() {
             stopHeartbeat();
-            if (!hasActiveWatchSession()) {
+
+            if (!shouldSendHeartbeatNow()) {
                 return;
             }
 
-            heartbeatTimer = setInterval(function() {
+            heartbeatTimer = setTimeout(function() {
+                heartbeatTimer = null;
+                if (!shouldSendHeartbeatNow()) {
+                    return;
+                }
+
                 const player = document.getElementById('vidPlayer');
-                sendHeartbeat(player && !player.paused && !player.ended).catch(function() {});
+                sendHeartbeat(player && !player.paused && !player.ended)
+                    .catch(function() {})
+                    .finally(function() {
+                        scheduleHeartbeatTick();
+                    });
             }, HEARTBEAT_INTERVAL_MS);
         }
+
+        function startHeartbeat() {
+            scheduleHeartbeatTick();
+        }
+
+        document.addEventListener('visibilitychange', function() {
+            if (!watchTimeEnabled) {
+                return;
+            }
+
+            if (document.hidden) {
+                stopHeartbeat();
+                return;
+            }
+
+            sendHeartbeat(false).catch(function() {});
+            startHeartbeat();
+        });
 
         function applyWatchSessionFromData(data) {
             const nextContext = data && data.watchContext ? {
@@ -2632,7 +2666,10 @@
             const originUrl = unwrapProxyTargetUrl(videoUrl);
 
             if (needsLocalMediaProxy(originUrl, sourceType)) {
-                return API_BASE + '/media?url=' + encodeURIComponent(originUrl);
+                if (!hlsProxyBaseUrl) {
+                    return originUrl;
+                }
+                return hlsProxyBaseUrl + encodeURIComponent(originUrl);
             }
 
             if (!needsMediaProxy(originUrl, sourceType)) {
@@ -2647,14 +2684,61 @@
             return hlsProxyBaseUrl + encodeURIComponent(originUrl);
         }
 
+        function readMetaApiBase() {
+            const meta = document.querySelector('meta[name="player-api-base"]');
+            const content = meta && meta.content ? meta.content.trim() : '';
+            return content ? content.replace(/\/+$/, '') : '';
+        }
+
+        function resolveBootstrapApiBase(config) {
+            if (config && config.apiBaseUrl) {
+                const fromFile = String(config.apiBaseUrl).trim();
+                if (fromFile) {
+                    if (/^https?:\/\//i.test(fromFile)) {
+                        return fromFile.replace(/\/+$/, '');
+                    }
+                    if (fromFile.startsWith('/')) {
+                        return fromFile.replace(/\/+$/, '') || '/api';
+                    }
+                }
+            }
+
+            const fromMeta = readMetaApiBase();
+            if (fromMeta) {
+                return fromMeta;
+            }
+
+            return '/api';
+        }
+
+        async function loadBootstrapApiBase() {
+            try {
+                const res = await fetch('/player-config.json', { cache: 'no-store' });
+                if (res.ok) {
+                    const data = await res.json();
+                    return resolveBootstrapApiBase(data);
+                }
+            } catch (error) {}
+
+            return resolveBootstrapApiBase(null);
+        }
+
         async function loadClientConfig() {
+            API_BASE = await loadBootstrapApiBase();
+
             try {
                 const res = await fetch(API_BASE.replace(/\/+$/, '') + '/config');
                 const data = await res.json();
                 if (data && data.success) {
+                    if (data.apiBaseUrl) {
+                        API_BASE = String(data.apiBaseUrl).replace(/\/+$/, '');
+                    }
                     hlsProxyBaseUrl = data.hlsProxyBaseUrl || '';
+                    playbackMode = data.playbackMode === 'signed' ? 'signed' : 'proxy';
                 }
-            } catch (error) {}
+            } catch (error) {
+                API_BASE = await loadBootstrapApiBase();
+            }
         }
 
         function isDramaboxHlsEntryUrl(checkUrl) {
@@ -2770,9 +2854,9 @@
             return new Hls({
                 enableWorker: !mobile,
                 lowLatencyMode: false,
-                startFragPrefetch: true,
-                maxBufferLength: mobile ? 60 : 30,
-                maxMaxBufferLength: 120,
+                startFragPrefetch: !mobile,
+                maxBufferLength: mobile ? 25 : 30,
+                maxMaxBufferLength: mobile ? 60 : 120,
                 maxBufferHole: 0.5,
                 fragLoadingMaxRetry: 6,
                 fragLoadingRetryDelay: 1000,
@@ -2838,7 +2922,7 @@
 
                         if (data.type === Hls.ErrorTypes.NETWORK_ERROR) {
                             const responseCode = data.response && Number(data.response.code);
-                            if (isInternalPlaybackUrl(videoUrl) && (responseCode === 401 || responseCode === 403 || responseCode === 404)) {
+                            if ((isInternalPlaybackUrl(videoUrl) || playbackMode === 'signed') && (responseCode === 401 || responseCode === 403 || responseCode === 404)) {
                                 hlsInstance.destroy();
                                 reloadEpisodePlaybackGrant();
                                 return;
