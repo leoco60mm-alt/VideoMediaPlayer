@@ -2717,22 +2717,45 @@
             return content ? content.replace(/\/+$/, '') : '';
         }
 
+        function normalizeApiBaseUrl(base) {
+            const trimmed = String(base || '').trim().replace(/\/+$/, '');
+            if (!trimmed) {
+                return '/api';
+            }
+
+            if (!/^https?:\/\//i.test(trimmed)) {
+                return trimmed.startsWith('/') ? trimmed : '/api';
+            }
+
+            try {
+                const parsed = new URL(trimmed);
+                if (parsed.origin === window.location.origin) {
+                    return parsed.pathname.replace(/\/+$/, '') || '/api';
+                }
+
+                if (
+                    window.location.protocol === 'https:' &&
+                    parsed.protocol === 'http:' &&
+                    parsed.host === window.location.host
+                ) {
+                    return 'https://' + parsed.host + (parsed.pathname.replace(/\/+$/, '') || '/api');
+                }
+            } catch (error) {}
+
+            return trimmed;
+        }
+
         function resolveBootstrapApiBase(config) {
             if (config && config.apiBaseUrl) {
                 const fromFile = String(config.apiBaseUrl).trim();
                 if (fromFile) {
-                    if (/^https?:\/\//i.test(fromFile)) {
-                        return fromFile.replace(/\/+$/, '');
-                    }
-                    if (fromFile.startsWith('/')) {
-                        return fromFile.replace(/\/+$/, '') || '/api';
-                    }
+                    return normalizeApiBaseUrl(fromFile);
                 }
             }
 
             const fromMeta = readMetaApiBase();
             if (fromMeta) {
-                return fromMeta;
+                return normalizeApiBaseUrl(fromMeta);
             }
 
             return '/api';
@@ -2758,7 +2781,7 @@
                 const data = await res.json();
                 if (data && data.success) {
                     if (data.apiBaseUrl) {
-                        API_BASE = String(data.apiBaseUrl).replace(/\/+$/, '');
+                        API_BASE = normalizeApiBaseUrl(data.apiBaseUrl);
                     }
                     hlsProxyBaseUrl = data.hlsProxyBaseUrl || '';
                     playbackMode = data.playbackMode === 'signed' ? 'signed' : 'proxy';
