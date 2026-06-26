@@ -1831,6 +1831,7 @@
 
         const LOAD_DATA_MESSAGE = 'Đang lấy dữ liệu...';
         const REFRESH_DATA_MESSAGE = 'Đang kiểm tra / refresh dữ liệu phim...';
+        const ARCHIVE_PENDING_MESSAGE = 'Video đang được xử lý, vui lòng đợi...';
         const LOAD_DATA_FAILED_MESSAGE = 'Lấy dữ liệu thất bại';
         const LOAD_DATA_NOTE = 'Thời gian lấy dữ liệu có thể mất vài phút tuỳ thuộc vào tốc độ mạng của bạn, Nếu gặp lỗi hãy thử bấm lấy dữ liệu lần nữa.';
         const CLIENT_FETCH_TIMEOUT_MS = 900000;
@@ -1905,25 +1906,49 @@
 
             const sessionId = ensureWatchSessionId();
             const memberCode = getMemberCodeInput();
-            const apiUrl = buildWatchEpisodeRequestUrl(protectedWatchMyUrl, memberCode, ep, sessionId);
-            const res = await fetchWithTimeout(apiUrl, {
-                method: 'GET',
-                headers: getClientDeviceHeaders()
-            }, CLIENT_FETCH_TIMEOUT_MS);
+            const startedAt = Date.now();
 
-            let data;
-            try {
-                data = await res.json();
-            } catch (parseError) {
-                throw new Error(LOAD_DATA_FAILED_MESSAGE);
+            while (true) {
+                const apiUrl = buildWatchEpisodeRequestUrl(protectedWatchMyUrl, memberCode, ep, sessionId);
+                const res = await fetchWithTimeout(apiUrl, {
+                    method: 'GET',
+                    headers: getClientDeviceHeaders()
+                }, CLIENT_FETCH_TIMEOUT_MS);
+
+                let data;
+                try {
+                    data = await res.json();
+                } catch (parseError) {
+                    throw new Error(LOAD_DATA_FAILED_MESSAGE);
+                }
+
+                if (
+                    res.status === 202 &&
+                    data &&
+                    (data.errorCode === 'DATA_REFRESHING' ||
+                        data.errorCode === 'DATA_PENDING' ||
+                        data.errorCode === 'ARCHIVE_PENDING')
+                ) {
+                    if (Date.now() - startedAt > REFRESH_POLL_MAX_MS) {
+                        throw new Error(LOAD_DATA_FAILED_MESSAGE);
+                    }
+
+                    const waitMessage = data.errorCode === 'ARCHIVE_PENDING'
+                        ? ARCHIVE_PENDING_MESSAGE
+                        : REFRESH_DATA_MESSAGE;
+                    setStatus('loading', waitMessage);
+                    showPlayerLoading(waitMessage, 0);
+                    await sleep(REFRESH_POLL_INTERVAL_MS);
+                    continue;
+                }
+
+                if (!res.ok || !data || data.success === false || !data.episode) {
+                    const message = (data && data.message) || LOAD_DATA_FAILED_MESSAGE;
+                    throw new Error(message);
+                }
+
+                return data.episode;
             }
-
-            if (!res.ok || !data || data.success === false || !data.episode) {
-                const message = (data && data.message) || LOAD_DATA_FAILED_MESSAGE;
-                throw new Error(message);
-            }
-
-            return data.episode;
         }
 
         function getClientDeviceHeaders() {
@@ -1987,7 +2012,9 @@
                 if (
                     res.status === 202 &&
                     data &&
-                    (data.errorCode === 'DATA_REFRESHING' || data.errorCode === 'DATA_PENDING')
+                    (data.errorCode === 'DATA_REFRESHING' ||
+                        data.errorCode === 'DATA_PENDING' ||
+                        data.errorCode === 'ARCHIVE_PENDING')
                 ) {
                     if (Date.now() - startedAt > REFRESH_POLL_MAX_MS) {
                         throw new Error(LOAD_DATA_FAILED_MESSAGE);
