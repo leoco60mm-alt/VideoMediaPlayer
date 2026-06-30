@@ -833,6 +833,8 @@
         let playbackQualityDowngradeAttempted = false;
         let protectedWatchMyUrl = '';
         let API_BASE = '/api';
+        const MAX_SUPPORTED_MOVIE_TYPE = 9;
+        const MMX_SOURCE_TYPE = 'mmx';
         const MSC1_DECRYPT_PASSWORD = '1234';
         const HEARTBEAT_INTERVAL_MS = 30000;
         const SESSION_KEY = 'movieCrawlerPlayerState';
@@ -1787,10 +1789,30 @@
             return watchUrl.toString();
         }
 
+        function buildWatchUrlFromMsu1Token(msu1Token) {
+            const token = String(msu1Token || '').trim();
+            if (!token || !/^MSU1\./i.test(token)) {
+                throw new Error('Link bảo vệ không hợp lệ: thiếu tham số data=MSU1...');
+            }
+
+            const watchUrl = new URL(window.location.href);
+            watchUrl.search = '';
+            watchUrl.searchParams.set('data', token);
+            return watchUrl.toString();
+        }
+
         async function resolveProtectedWatchUrl(encryptedText) {
             const raw = (encryptedText || '').trim();
             if (!raw) {
                 throw new Error('Chưa nhập dữ liệu đã mã hoá.');
+            }
+
+            if (/^MSU1\./i.test(raw)) {
+                return buildWatchUrlFromMsu1Token(raw);
+            }
+
+            if (/^https?:\/\//i.test(raw)) {
+                return parseMyUrlFromShareCodePlaintext(raw);
             }
 
             let decryptedText;
@@ -2676,6 +2698,7 @@
             const originUrl = unwrapProxyTargetUrl(url);
             if (!originUrl) return false;
             if (needsLocalMediaProxy(originUrl, sourceType)) return false;
+            if (sourceType === MMX_SOURCE_TYPE) return false;
             if (sourceType === 'shortmax' || sourceType === 'dramawave') return true;
             if (/mydramawave\.com/i.test(originUrl)) return true;
             return /\.m3u8(\?|$)/i.test(originUrl) && /shorttv\.live/i.test(originUrl);
@@ -2808,6 +2831,9 @@
                 if (/\.mp4(?:[?#]|$)/i.test(checkUrl) || /play\.mp4/i.test(checkUrl)) {
                     return 'video/mp4';
                 }
+                if (sourceType === MMX_SOURCE_TYPE) {
+                    return 'application/x-mpegURL';
+                }
             }
 
             try {
@@ -2825,6 +2851,10 @@
             }
 
             if (sourceType === 'dramawave' && /\.m3u8(\?|$)/i.test(checkUrl)) {
+                return 'application/x-mpegURL';
+            }
+
+            if (sourceType === MMX_SOURCE_TYPE && /\.m3u8(\?|$)/i.test(checkUrl)) {
                 return 'application/x-mpegURL';
             }
 
@@ -3310,6 +3340,7 @@
                 if (await restoreSessionIfAvailable({ requireCurrentKey: true })) {
                     return;
                 }
+                await loadMovieData();
                 return;
             }
 
