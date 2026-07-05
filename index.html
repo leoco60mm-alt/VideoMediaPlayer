@@ -753,8 +753,8 @@
 
     <div id="confirm-overlay" aria-hidden="true">
         <div class="confirm-card">
-            <h3 class="confirm-title">Tải lại dữ liệu từ server?</h3>
-            <p class="confirm-message">Cache local sẽ được xóa và tải lại từ server (ưu tiên video đã lưu trên R2). Không tải lại từ nguồn gốc bên ngoài.</p>
+            <h3 class="confirm-title" id="confirm-title">Tải lại dữ liệu từ server?</h3>
+            <p class="confirm-message" id="confirm-message">Cache local sẽ được xóa và tải lại từ server (ưu tiên video đã lưu trên R2). Không tải lại từ nguồn gốc bên ngoài.</p>
             <div class="confirm-actions">
                 <button type="button" id="confirm-cancel">Huỷ</button>
                 <button type="button" id="confirm-ok">Đồng ý</button>
@@ -783,6 +783,7 @@
                 <div class="controls-row">
                     <button type="button" class="ctrl-btn" id="btn-play" aria-label="Phát / Tạm">▶</button>
                     <span id="episode-title">Chưa chọn tập</span>
+                    <span id="watch-movie-quota" style="display:none;font-size:12px;color:#9fd4ff;font-weight:700;"></span>
                     <span id="watch-remaining" style="display:none;font-size:12px;color:#ffd27a;font-weight:700;"></span>
                     <span id="time-display">0:00 / 0:00</span>
                     <button type="button" class="ctrl-btn" id="btn-fs" aria-label="Toàn màn hình">⛶</button>
@@ -833,8 +834,6 @@
         let playbackQualityDowngradeAttempted = false;
         let protectedWatchMyUrl = '';
         let API_BASE = '/api';
-        const MAX_SUPPORTED_MOVIE_TYPE = 9;
-        const MMX_SOURCE_TYPE = 'mmx';
         const MSC1_DECRYPT_PASSWORD = '1234';
         const HEARTBEAT_INTERVAL_MS = 30000;
         const SESSION_KEY = 'movieCrawlerPlayerState';
@@ -852,6 +851,25 @@
         let pendingSessionSave = false;
         let pendingSessionSaveExtra = null;
         let embeddedCustomerCode = '';
+        let currentMovieQuota = null;
+        let pendingConfirmHandler = null;
+
+        function isMemberWatchCode(value) {
+            return /^[A-Z0-9]{16}$/.test(String(value || '').trim().toUpperCase());
+        }
+
+        function isCustomerWatchCode(value) {
+            return /^[A-Z0-9]{24}$/.test(String(value || '').trim().toUpperCase());
+        }
+
+        function shouldApplyMovieQuota() {
+            if (embeddedCustomerCode) {
+                return false;
+            }
+
+            const code = getMemberCodeInput();
+            return isMemberWatchCode(code) && !isCustomerWatchCode(code);
+        }
 
         function isValidWatchCode(value) {
             return /^[A-Z0-9]{16}$/.test(value) || /^[A-Z0-9]{24}$/.test(value);
@@ -866,6 +884,8 @@
 
         function resetCustomerCodeField() {
             embeddedCustomerCode = '';
+            currentMovieQuota = null;
+            updateMovieQuotaDisplay();
             const input = document.getElementById('memberCodeInput');
             if (input) {
                 input.readOnly = false;
@@ -938,6 +958,216 @@
             }
 
             return code;
+        }
+
+        function parseEpisodeNumber(value) {
+            const parsed = parseInt(String(value || '').trim(), 10);
+            return Number.isFinite(parsed) && parsed > 0 ? parsed : 0;
+        }
+
+        function applyMovieQuotaFromData(data) {
+            if (data && data.movieQuota && typeof data.movieQuota === 'object') {
+                currentMovieQuota = data.movieQuota;
+            } else if (!data || !data.movieQuota) {
+                currentMovieQuota = null;
+            }
+            updateMovieQuotaDisplay();
+        }
+
+        function updateMovieQuotaDisplay() {
+            const el = document.getElementById('watch-movie-quota');
+            if (!el) {
+                return;
+            }
+
+            if (!shouldApplyMovieQuota() || !currentMovieQuota || currentMovieQuota.unlimited) {
+                el.style.display = 'none';
+                el.textContent = '';
+                return;
+            }
+
+            const remaining = currentMovieQuota.remainingMovies;
+            const maxMovies = currentMovieQuota.maxMovies;
+            if (remaining == null && maxMovies == null) {
+                el.style.display = 'none';
+                el.textContent = '';
+                return;
+            }
+
+            el.style.display = '';
+            if (maxMovies != null && remaining != null) {
+                el.textContent = 'Còn ' + remaining + '/' + maxMovies + ' phim';
+            } else if (remaining != null) {
+                el.textContent = 'Còn ' + remaining + ' phim';
+            } else {
+                el.textContent = '';
+                el.style.display = 'none';
+            }
+        }
+
+        function buildMovieQuotaPrecheckUrl(memberCode, videoId, type, ep) {
+            const base = API_BASE.replace(/\/+$/, '');
+            let url = base + '/watch/movie-quota/precheck';
+            url += '?memberCode=' + encodeURIComponent(memberCode);
+            url += '&videoId=' + encodeURIComponent(videoId);
+            url += '&type=' + encodeURIComponent(String(type));
+            url += '&ep=' + encodeURIComponent(String(ep));
+            return url;
+        }
+
+        async function fetchMovieQuotaPrecheck(episodeNumber) {
+            if (!shouldApplyMovieQuota() || !currentWatchContext) {
+                return null;
+            }
+
+            const memberCode = getMemberCodeInput();
+            const apiUrl = buildMovieQuotaPrecheckUrl(
+                memberCode,
+                currentWatchContext.videoId,
+                currentWatchContext.type,
+                episodeNumber
+            );
+            const res = await fetchWithTimeout(apiUrl, {
+                method: 'GET',
+                headers: getClientDeviceHeaders()
+            }, CLIENT_FETCH_TIMEOUT_MS);
+
+            let data;
+            try {
+                data = await res.json();
+            } catch (parseError) {
+                throw new Error('Không thể kiểm tra lượt xem phim.');
+            }
+
+            if (!res.ok || !data || data.success === false) {
+                throw new Error((data && data.message) || 'Không thể kiểm tra lượt xem phim.');
+            }
+
+            if (data.movieQuota) {
+                currentMovieQuota = data.movieQuota;
+                updateMovieQuotaDisplay();
+            }
+
+            return data;
+        }
+
+        async function consumeMovieQuota(episodeNumber) {
+            if (!shouldApplyMovieQuota() || !currentWatchContext) {
+                throw new Error('Thiếu thông tin mã hội viên.');
+            }
+
+            const memberCode = getMemberCodeInput();
+            const base = API_BASE.replace(/\/+$/, '');
+            const res = await fetchWithTimeout(base + '/watch/movie-quota/consume', {
+                method: 'POST',
+                headers: Object.assign({ 'Content-Type': 'application/json' }, getClientDeviceHeaders()),
+                body: JSON.stringify({
+                    memberCode: memberCode,
+                    videoId: currentWatchContext.videoId,
+                    type: currentWatchContext.type,
+                    ep: episodeNumber
+                })
+            }, CLIENT_FETCH_TIMEOUT_MS);
+
+            let data;
+            try {
+                data = await res.json();
+            } catch (parseError) {
+                throw new Error('Không thể trừ lượt xem phim.');
+            }
+
+            if (!res.ok || !data || data.success === false) {
+                throw new Error((data && data.message) || 'Không thể trừ lượt xem phim.');
+            }
+
+            if (data.movieQuota) {
+                currentMovieQuota = Object.assign({}, currentMovieQuota || {}, data.movieQuota, {
+                    alreadyUnlocked: true,
+                    needsConfirm: false,
+                    quotaExhausted: false
+                });
+                updateMovieQuotaDisplay();
+            }
+
+            return data;
+        }
+
+        function showConfirmDialog(options) {
+            const overlay = document.getElementById('confirm-overlay');
+            const titleEl = document.getElementById('confirm-title');
+            const messageEl = document.getElementById('confirm-message');
+            if (!overlay || !titleEl || !messageEl) {
+                return Promise.resolve(false);
+            }
+
+            titleEl.textContent = options.title || 'Xác nhận';
+            messageEl.textContent = options.message || '';
+            pendingConfirmHandler = options.onConfirm || null;
+            overlay.classList.add('show');
+            overlay.setAttribute('aria-hidden', 'false');
+
+            return new Promise(function(resolve) {
+                overlay._confirmResolve = resolve;
+            });
+        }
+
+        function hideConfirmDialog(confirmed) {
+            const overlay = document.getElementById('confirm-overlay');
+            if (!overlay) {
+                return;
+            }
+
+            overlay.classList.remove('show');
+            overlay.setAttribute('aria-hidden', 'true');
+            pendingConfirmHandler = null;
+
+            if (typeof overlay._confirmResolve === 'function') {
+                overlay._confirmResolve(Boolean(confirmed));
+                overlay._confirmResolve = null;
+            }
+        }
+
+        async function ensureMovieQuotaForEpisode(episodeMeta) {
+            if (!shouldApplyMovieQuota() || !currentWatchContext) {
+                return true;
+            }
+
+            const epNum = parseEpisodeNumber(episodeMeta && episodeMeta.ep);
+            const freePreview = Number(currentMovieQuota && currentMovieQuota.freePreviewEpisodes) || 5;
+            if (epNum <= freePreview) {
+                return true;
+            }
+
+            if (currentMovieQuota && currentMovieQuota.unlimited) {
+                return true;
+            }
+
+            const precheck = await fetchMovieQuotaPrecheck(epNum);
+            const quota = precheck && precheck.movieQuota ? precheck.movieQuota : currentMovieQuota;
+
+            if (quota && quota.alreadyUnlocked) {
+                return true;
+            }
+
+            if (quota && quota.quotaExhausted) {
+                showToast('Đã hết lượt xem phim trong kỳ hiện tại.');
+                return false;
+            }
+
+            const remaining = quota && quota.remainingMovies != null ? quota.remainingMovies : '?';
+            const maxMovies = quota && quota.maxMovies != null ? quota.maxMovies : '?';
+            const episodeLabel = episodeMeta.name || ('Tập ' + episodeMeta.ep);
+            const confirmed = await showConfirmDialog({
+                title: 'Trừ 1 lượt xem phim?',
+                message: 'Xem ' + episodeLabel + ' sẽ trừ 1 lượt phim. Còn ' + remaining + '/' + maxMovies + ' phim trong kỳ. Bạn có muốn tiếp tục?'
+            });
+
+            if (!confirmed) {
+                return false;
+            }
+
+            await consumeMovieQuota(epNum);
+            return true;
         }
 
         function formatRemainingTime(totalSeconds) {
@@ -1789,30 +2019,10 @@
             return watchUrl.toString();
         }
 
-        function buildWatchUrlFromMsu1Token(msu1Token) {
-            const token = String(msu1Token || '').trim();
-            if (!token || !/^MSU1\./i.test(token)) {
-                throw new Error('Link bảo vệ không hợp lệ: thiếu tham số data=MSU1...');
-            }
-
-            const watchUrl = new URL(window.location.href);
-            watchUrl.search = '';
-            watchUrl.searchParams.set('data', token);
-            return watchUrl.toString();
-        }
-
         async function resolveProtectedWatchUrl(encryptedText) {
             const raw = (encryptedText || '').trim();
             if (!raw) {
                 throw new Error('Chưa nhập dữ liệu đã mã hoá.');
-            }
-
-            if (/^MSU1\./i.test(raw)) {
-                return buildWatchUrlFromMsu1Token(raw);
-            }
-
-            if (/^https?:\/\//i.test(raw)) {
-                return parseMyUrlFromShareCodePlaintext(raw);
             }
 
             let decryptedText;
@@ -2083,6 +2293,7 @@
                 const data = await fetchWatchDataWithRetry(apiUrl);
                 applyCustomerCodeFromData(data);
                 applyWatchSessionFromData(data);
+                applyMovieQuotaFromData(data);
 
                 const episodes = normalizeApiData(data);
                 currentSourceType = data.type || '';
@@ -2327,6 +2538,12 @@
             showPlayerLoading('Đang tải ' + (episodeMeta.name || ('Tập ' + episodeMeta.ep)) + '...', 0);
 
             try {
+                const canPlay = await ensureMovieQuotaForEpisode(episodeMeta);
+                if (!canPlay) {
+                    hidePlayerLoading();
+                    return false;
+                }
+
                 const episodeData = await fetchWatchEpisode(episodeMeta.ep);
                 await persistSessionStateWithHeartbeat({ currentTime: startTime || 0 });
                 playVideo(Object.assign({}, episodeMeta, episodeData), startTime || 0);
@@ -2698,7 +2915,6 @@
             const originUrl = unwrapProxyTargetUrl(url);
             if (!originUrl) return false;
             if (needsLocalMediaProxy(originUrl, sourceType)) return false;
-            if (sourceType === MMX_SOURCE_TYPE) return false;
             if (sourceType === 'shortmax' || sourceType === 'dramawave') return true;
             if (/mydramawave\.com/i.test(originUrl)) return true;
             return /\.m3u8(\?|$)/i.test(originUrl) && /shorttv\.live/i.test(originUrl);
@@ -2831,9 +3047,6 @@
                 if (/\.mp4(?:[?#]|$)/i.test(checkUrl) || /play\.mp4/i.test(checkUrl)) {
                     return 'video/mp4';
                 }
-                if (sourceType === MMX_SOURCE_TYPE) {
-                    return 'application/x-mpegURL';
-                }
             }
 
             try {
@@ -2851,10 +3064,6 @@
             }
 
             if (sourceType === 'dramawave' && /\.m3u8(\?|$)/i.test(checkUrl)) {
-                return 'application/x-mpegURL';
-            }
-
-            if (sourceType === MMX_SOURCE_TYPE && /\.m3u8(\?|$)/i.test(checkUrl)) {
                 return 'application/x-mpegURL';
             }
 
@@ -3203,29 +3412,36 @@
         }
 
         function toggleRefreshConfirm(show) {
-            const overlay = document.getElementById('confirm-overlay');
-            if (!overlay) return;
+            if (show) {
+                showConfirmDialog({
+                    title: 'Tải lại dữ liệu từ server?',
+                    message: 'Cache local sẽ được xóa và tải lại từ server (ưu tiên video đã lưu trên R2). Không tải lại từ nguồn gốc bên ngoài.'
+                });
+                return;
+            }
 
-            overlay.classList.toggle('show', Boolean(show));
-            overlay.setAttribute('aria-hidden', show ? 'false' : 'true');
+            hideConfirmDialog(false);
         }
 
         function requestForceRefresh() {
             pendingRefreshRequest = {
                 cacheKey: getCurrentSessionKey()
             };
-            toggleRefreshConfirm(true);
+            showConfirmDialog({
+                title: 'Tải lại dữ liệu từ server?',
+                message: 'Cache local sẽ được xóa và tải lại từ server (ưu tiên video đã lưu trên R2). Không tải lại từ nguồn gốc bên ngoài.'
+            });
         }
 
         function confirmForceRefresh() {
             if (!pendingRefreshRequest) {
-                toggleRefreshConfirm(false);
+                hideConfirmDialog(false);
                 return;
             }
 
             const request = pendingRefreshRequest;
             pendingRefreshRequest = null;
-            toggleRefreshConfirm(false);
+            hideConfirmDialog(false);
             clearLatestEpisodeCache(request.cacheKey);
             clearSessionState();
             cleanupCurrentMedia();
@@ -3249,13 +3465,19 @@
         document.getElementById('btn-reload').addEventListener('click', requestForceRefresh);
         document.getElementById('confirm-cancel').addEventListener('click', function() {
             pendingRefreshRequest = null;
-            toggleRefreshConfirm(false);
+            hideConfirmDialog(false);
         });
-        document.getElementById('confirm-ok').addEventListener('click', confirmForceRefresh);
+        document.getElementById('confirm-ok').addEventListener('click', function() {
+            if (pendingRefreshRequest) {
+                confirmForceRefresh();
+                return;
+            }
+            hideConfirmDialog(true);
+        });
         document.getElementById('confirm-overlay').addEventListener('click', function(e) {
             if (e.target === e.currentTarget) {
                 pendingRefreshRequest = null;
-                toggleRefreshConfirm(false);
+                hideConfirmDialog(false);
             }
         });
         document.getElementById('btn-history').addEventListener('click', function() {
@@ -3340,7 +3562,6 @@
                 if (await restoreSessionIfAvailable({ requireCurrentKey: true })) {
                     return;
                 }
-                await loadMovieData();
                 return;
             }
 
