@@ -521,6 +521,31 @@
             font-size: 12px;
             font-variant-numeric: tabular-nums;
         }
+        #subtitle-lang-select {
+            background-color: rgba(229, 9, 20, 0.45);
+            color: #fff;
+            border: none;
+            border-radius: 30px 0 0 30px;
+            padding: 10px 14px 10px 18px;
+            font-size: 13px;
+            font-weight: bold;
+            cursor: pointer;
+            opacity: 0.6;
+            transition: opacity 0.2s ease, background-color 0.2s ease;
+            touch-action: manipulation;
+            max-width: 150px;
+            width: 100%;
+            appearance: none;
+            -webkit-appearance: none;
+        }
+        #subtitle-lang-select:hover {
+            opacity: 1;
+            background-color: rgba(229, 9, 20, 0.9);
+        }
+        #subtitle-lang-select option {
+            color: #111;
+            background: #fff;
+        }
         #movie-box:fullscreen,
         #movie-box:-webkit-full-screen,
         #movie-box.fs-active {
@@ -617,14 +642,16 @@
             }
             #fab-episodes,
             #fab-history-player,
-            #fab-next-ep {
+            #fab-next-ep,
+            #subtitle-lang-select {
                 width: 42px;
                 height: 42px;
-                padding: 0;
+                padding: 0 0 0 6px;
                 border-radius: 22px 0 0 22px;
-                font-size: 18px;
+                font-size: 11px;
                 line-height: 42px;
-                text-align: center;
+                text-align: left;
+                max-width: 110px;
             }
             #fab-next-ep {
                 font-size: 19px;
@@ -794,6 +821,9 @@
         <div id="episode-side-controls">
             <button type="button" id="fab-episodes" aria-label="Chọn tập" title="Chọn tập">☰ <span class="fab-text">Chọn Tập</span></button>
             <button type="button" id="fab-history-player" aria-label="History" title="History">↺ <span class="fab-text">History</span></button>
+            <select id="subtitle-lang-select" aria-label="Chọn ngôn ngữ phụ đề" hidden>
+                <option value="off">Phụ đề: Tắt</option>
+            </select>
             <button type="button" id="fab-next-ep" aria-label="Tập tiếp theo" title="Tập tiếp theo">▼</button>
         </div>
 
@@ -848,10 +878,13 @@
         let heartbeatTimer = null;
         let shownWatchWarnings = {};
         let sessionSaveInFlight = false;
+        let currentEpisodeSubtitles = [];
+        let selectedSubtitleLang = 'off';
         let pendingSessionSave = false;
         let pendingSessionSaveExtra = null;
         let embeddedCustomerCode = '';
         let currentMovieQuota = null;
+        let currentSkipMovieQuota = false;
         let pendingConfirmHandler = null;
 
         function isMemberWatchCode(value) {
@@ -966,6 +999,7 @@
         }
 
         function applyMovieQuotaFromData(data) {
+            currentSkipMovieQuota = Boolean(data && data.skipMovieQuota);
             if (data && data.movieQuota && typeof data.movieQuota === 'object') {
                 currentMovieQuota = data.movieQuota;
             } else if (!data || !data.movieQuota) {
@@ -1132,6 +1166,10 @@
                 return true;
             }
 
+            if (currentSkipMovieQuota) {
+                return true;
+            }
+
             const epNum = parseEpisodeNumber(episodeMeta && episodeMeta.ep);
             const freePreview = Number(currentMovieQuota && currentMovieQuota.freePreviewEpisodes) || 5;
             if (epNum <= freePreview) {
@@ -1157,9 +1195,16 @@
             const remaining = quota && quota.remainingMovies != null ? quota.remainingMovies : '?';
             const maxMovies = quota && quota.maxMovies != null ? quota.maxMovies : '?';
             const episodeLabel = episodeMeta.name || ('Tập ' + episodeMeta.ep);
+            const slotsRequired = quota && quota.slotsRequired != null ? Number(quota.slotsRequired) : 1;
+            const extraSlots = quota && quota.extraSlotsFromTags != null ? Number(quota.extraSlotsFromTags) : 0;
+            const slotMessage = slotsRequired > 1
+                ? ('Xem ' + episodeLabel + ' sẽ trừ ' + slotsRequired + ' lượt phim' +
+                    (extraSlots > 0 ? (' (gồm ' + extraSlots + ' lượt thêm do mác phim)') : '') +
+                    '. Còn ' + remaining + '/' + maxMovies + ' phim trong kỳ. Bạn có muốn tiếp tục?')
+                : ('Xem ' + episodeLabel + ' sẽ trừ 1 lượt phim. Còn ' + remaining + '/' + maxMovies + ' phim trong kỳ. Bạn có muốn tiếp tục?');
             const confirmed = await showConfirmDialog({
-                title: 'Trừ 1 lượt xem phim?',
-                message: 'Xem ' + episodeLabel + ' sẽ trừ 1 lượt phim. Còn ' + remaining + '/' + maxMovies + ' phim trong kỳ. Bạn có muốn tiếp tục?'
+                title: slotsRequired > 1 ? ('Trừ ' + slotsRequired + ' lượt xem phim?') : 'Trừ 1 lượt xem phim?',
+                message: slotMessage
             });
 
             if (!confirmed) {
@@ -1463,7 +1508,10 @@
 
             try {
                 const episodeData = await fetchWatchEpisode(currentEp.ep);
-                playVideo(Object.assign({}, currentEp, episodeData), preserveTime);
+                const mergedEpisode = Object.assign({}, currentEp, episodeData);
+                episodesList[currentEpisodeIndex] = mergedEpisode;
+                populateSubtitleLangSelect(mergedEpisode);
+                playVideo(mergedEpisode, preserveTime);
             } catch (error) {
                 hidePlayerLoading();
                 showToast((error && error.message) || 'Không thể tải lại tập phim');
@@ -2407,6 +2455,12 @@
             btnPlay.addEventListener('click', function() {
                 if (player.paused) safePlay(player); else player.pause();
             });
+            const subtitleLangSelect = document.getElementById('subtitle-lang-select');
+            if (subtitleLangSelect) {
+                subtitleLangSelect.addEventListener('change', function() {
+                    applySubtitleTrackChange(subtitleLangSelect.value);
+                });
+            }
             player.addEventListener('play', updatePlayIcon);
             player.addEventListener('pause', updatePlayIcon);
             player.addEventListener('loadstart', function() {
@@ -2545,8 +2599,11 @@
                 }
 
                 const episodeData = await fetchWatchEpisode(episodeMeta.ep);
+                const mergedEpisode = Object.assign({}, episodeMeta, episodeData);
+                episodesList[index] = mergedEpisode;
+                populateSubtitleLangSelect(mergedEpisode);
                 await persistSessionStateWithHeartbeat({ currentTime: startTime || 0 });
-                playVideo(Object.assign({}, episodeMeta, episodeData), startTime || 0);
+                playVideo(mergedEpisode, startTime || 0);
                 updateNextEpButton();
                 if (!fromAuto) togglePopup(false);
                 return true;
@@ -2764,6 +2821,174 @@
             clearSubtitleSyncListeners();
             subtitleCues = [];
             subtitleSyncToken++;
+        }
+
+        function getSubtitleLangStorageKey() {
+            if (!currentWatchContext || !currentWatchContext.videoId) {
+                return '';
+            }
+
+            return 'subtitle_lang_' + String(currentWatchContext.type) + '_' + String(currentWatchContext.videoId);
+        }
+
+        function loadSelectedSubtitleLang() {
+            const key = getSubtitleLangStorageKey();
+            if (!key) {
+                return 'off';
+            }
+
+            try {
+                const saved = sessionStorage.getItem(key) || 'off';
+                return saved === 'original' ? 'default' : saved;
+            } catch (error) {
+                return 'off';
+            }
+        }
+
+        function saveSelectedSubtitleLang(lang) {
+            const key = getSubtitleLangStorageKey();
+            if (!key) {
+                return;
+            }
+
+            try {
+                sessionStorage.setItem(key, String(lang || 'off'));
+            } catch (error) {}
+        }
+
+        function normalizeEpisodeSubtitles(ep) {
+            const tracks = [];
+
+            if (ep && Array.isArray(ep.subtitles)) {
+                ep.subtitles.forEach(function(track) {
+                    if (!track || !track.subtitleUrl) {
+                        return;
+                    }
+
+                    let lang = String(track.lang || 'default').toLowerCase();
+                    let label = String(track.label || track.lang || 'Mặc định');
+                    if (lang === 'original' || lang === 'default') {
+                        lang = 'default';
+                        label = 'Mặc định';
+                    }
+
+                    tracks.push({
+                        lang: lang,
+                        label: label,
+                        subtitleUrl: track.subtitleUrl
+                    });
+                });
+            }
+
+            if (!tracks.length && ep && ep.subtitleUrl) {
+                tracks.push({
+                    lang: 'default',
+                    label: 'Mặc định',
+                    subtitleUrl: ep.subtitleUrl
+                });
+            }
+
+            return tracks;
+        }
+
+        function resolveInitialSubtitleLang(tracks, savedLang) {
+            if (savedLang && savedLang !== 'off') {
+                const hasSaved = tracks.some(function(track) {
+                    return track.lang === savedLang;
+                });
+                if (hasSaved) {
+                    return savedLang;
+                }
+            }
+
+            const viTrack = tracks.find(function(track) {
+                return track.lang === 'vi';
+            });
+            if (viTrack) {
+                return 'vi';
+            }
+
+            const defaultTrack = tracks.find(function(track) {
+                return track.lang === 'default';
+            });
+            if (defaultTrack) {
+                return 'default';
+            }
+
+            return tracks.length ? tracks[0].lang : 'off';
+        }
+
+        function populateSubtitleLangSelect(ep) {
+            const select = document.getElementById('subtitle-lang-select');
+            if (!select) {
+                return;
+            }
+
+            currentEpisodeSubtitles = normalizeEpisodeSubtitles(ep);
+            select.innerHTML = '<option value="off">Phụ đề: Tắt</option>';
+
+            currentEpisodeSubtitles.forEach(function(track) {
+                const option = document.createElement('option');
+                option.value = track.lang;
+                option.textContent = track.label;
+                select.appendChild(option);
+            });
+
+            if (!currentEpisodeSubtitles.length) {
+                select.hidden = true;
+                selectedSubtitleLang = 'off';
+                return;
+            }
+
+            select.hidden = false;
+            const savedLang = loadSelectedSubtitleLang();
+            selectedSubtitleLang = resolveInitialSubtitleLang(currentEpisodeSubtitles, savedLang);
+            select.value = selectedSubtitleLang;
+        }
+
+        function resolveActiveSubtitleUrl(ep) {
+            if (selectedSubtitleLang === 'off') {
+                return null;
+            }
+
+            const tracks = normalizeEpisodeSubtitles(ep);
+            const active = tracks.find(function(track) {
+                return track.lang === selectedSubtitleLang;
+            });
+
+            if (active) {
+                return active.subtitleUrl;
+            }
+
+            return tracks.length ? tracks[0].subtitleUrl : (ep && ep.subtitleUrl) || null;
+        }
+
+        function applySubtitleTrackChange(lang) {
+            selectedSubtitleLang = String(lang || 'off');
+            saveSelectedSubtitleLang(selectedSubtitleLang);
+
+            const player = document.getElementById('vidPlayer');
+            const customSub = document.getElementById('custom-sub');
+            const token = playbackToken;
+
+            if (!player || !customSub) {
+                return;
+            }
+
+            clearSubtitleSyncListeners();
+            customSub.innerHTML = '';
+            customSub.style.display = 'none';
+
+            const episodeMeta = episodesList[currentEpisodeIndex];
+            if (!episodeMeta) {
+                return;
+            }
+
+            const subtitleUrl = resolveActiveSubtitleUrl(episodeMeta);
+            const hasSubtitle = prepareSubtitleSession(subtitleUrl, token);
+            if (hasSubtitle) {
+                startSubtitleSync(player, token);
+            }
         }
 
         function renderSubtitleAtTime(currentTime, token) {
@@ -3293,7 +3518,7 @@
                 return;
             }
 
-            const hasSubtitle = prepareSubtitleSession(ep.subtitleUrl, token);
+            const hasSubtitle = prepareSubtitleSession(resolveActiveSubtitleUrl(ep), token);
             const sourceMode = attachVideoSource(player, playbackUrl, token);
 
             if (hasSubtitle) {
